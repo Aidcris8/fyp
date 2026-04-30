@@ -1,0 +1,34 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Python environments
+.env
+venv/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code settings
+.vscode/
+
+# Large data folders
+data/
+
+# Machine learning model weights
+*.pt
+*.pth
+*.onnx
+
+# Video files
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Archives and Windows metadata
+*.zip
+*:Zone.Identifier
