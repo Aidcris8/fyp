@@ -17,21 +17,22 @@ parser.add_argument("--game", type=str, default=None,
                          "If omitted, all downloaded games are processed.")
 args = parser.parse_args()
 
+#for extracting clips for a single game given game name is included when running the file
 if args.game:
     GAMES = [args.game]
     print(f"Processing single game: {args.game}")
 else:
-    # Auto-detect all downloaded games by scanning for Labels-v2.json
+    # detects all downloaded games by scanning for Labels-v2.json
     GAMES = []
-    for league in os.listdir(SOCCERNET_DIR):
+    for league in os.listdir(SOCCERNET_DIR):         #go through the league found first in the game name
         league_dir = os.path.join(SOCCERNET_DIR, league)
         if not os.path.isdir(league_dir):
             continue
-        for season in os.listdir(league_dir):
+        for season in os.listdir(league_dir):        #go through the season found after in the name
             season_dir = os.path.join(league_dir, season)
             if not os.path.isdir(season_dir):
                 continue
-            for match in os.listdir(season_dir):
+            for match in os.listdir(season_dir):     #find specific match with details listed at the end of the game name
                 match_dir = os.path.join(season_dir, match)
                 labels_path = os.path.join(match_dir, "Labels-v2.json")
                 if os.path.exists(labels_path):
@@ -47,38 +48,44 @@ for game in GAMES:
     with open(labels_path, "r") as f:
         data = json.load(f)
 
+    #read labels file and search for offside labels specifically
     offsides = [a for a in data["annotations"] if a.get("label") == "Offside"]
     print(f"\n{game}")
     print(f"Found {len(offsides)} offside events")
 
+    #extract time stamp fron each offsid event
     for i, event in enumerate(offsides):
         half = int(event["gameTime"].split(" - ")[0])
         position_ms = int(event["position"])
         position_sec = position_ms / 1000.0
 
-        start = max(0, position_sec - CLIP_BEFORE)
-        duration = CLIP_BEFORE + CLIP_AFTER
+        start = max(0, position_sec - CLIP_BEFORE)  #start 10 seconds before offside event, never negative
+        duration = CLIP_BEFORE + CLIP_AFTER         #adding 25 seconds after offside event to allow for replays
 
+        #find right video file, if file isnt there it will print a warning and skips over with continue
         video_file = os.path.join(game_dir, f"{half}_720p.mkv")
         if not os.path.exists(video_file):
             print(f"  Video not found: {video_file}")
             continue
 
+        #builds output name. replaces slashes and spaces with underscores, start offside index at 1
         game_clean = game.replace("/", "_").replace(" ", "_")
         output_file = os.path.join(OUTPUT_DIR, f"{game_clean}_half{half}_offside{i+1}.mp4")
 
+        #skips if clip already exists, making the script incremental
         if os.path.exists(output_file):
             print(f"  Already exists, skipping: {os.path.basename(output_file)}")
             continue
 
+        #running ffmpeg
         cmd = [
-            "ffmpeg", "-y",
-            "-ss", str(start),
-            "-i", video_file,
-            "-t", str(duration),
-            "-c:v", "libx264",
-            "-c:a", "aac",
-            "-loglevel", "error",
+            "ffmpeg", "-y",     #overwrite without asking
+            "-ss", str(start),  #seek to this second before opening the file
+            "-i", video_file,   #input file 
+            "-t", str(duration),#clip duration
+            "-c:v", "libx264",  #re-encode video as H.264
+            "-c:a", "aac",      #re-encode audio as AAC
+            "-loglevel", "error",#suppress ffmpeg's verbose output, only show errors
             output_file
         ]
 

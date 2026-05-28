@@ -4,55 +4,52 @@
 \section{Problem Statement and Motivation}%
 \label{sec:intro_motivation}
 
-Association football is the most widely watched sport in the world, and the consistent application of its laws is central to the integrity of any match. Among these laws, the offside rule (Law 11) is one of the most consequential and one of the most difficult to adjudicate in real time, because it requires the simultaneous judgement of multiple player positions at the precise moment that the ball is played.
+Football is the most widely watched sport globally, and the consistent application of its laws is essential to the integrity of any match. Among these laws, the offside rule (Law~11)~\cite{ifab2023laws} is one of the most commonly occurring and the most difficult to adjudicate in real time, because it requires the simultaneous judgement of multiple player positions at the exact moment that the ball is played.
 
-In elite professional football, this difficulty has been addressed through the introduction of the \gls{var} system, supported by dedicated multi-camera infrastructure and proprietary tracking software. However, this technology is confined to the top tier of the sport. The capital cost, the operational complexity, and the requirement for purpose-built camera installations all place such systems out of reach of lower-division leagues, amateur competitions, university-level analysis, and the broader analytical work that takes place outside the elite environment. Despite this, those tiers of football do receive television coverage, often comprising no more than a single broadcast camera feed.
+In elite level football, this difficulty has been addressed through the introduction of a semi-automated offside system which consists of dedicated multi-camera infrastructure and proprietary tracking software. However, this technology is limited to the top tier of the sport given its capital cost and operational complexity. As a result, any league or game that takes place outside these elite level competitions does not have access to this infrastructure, and offside decisions in those contexts are based solely on the linesman's judgement.
 
-This dissertation is motivated by the gap between the precision available to elite football through \gls{var} and the visual information that is already available, in the form of broadcast video, to the rest of the game. If a system can be built that produces credible offside verdicts from broadcast footage alone, then a comparable standard of objective analysis can be approximated for purposes such as post-match review, performance analytics, and coaching feedback in settings where \gls{var} is not deployed.
+This final year project is motivated by the gap between the precision available to elite football through \gls{var} and the visual information that is already available, in the form of broadcast video, to the rest of the game. If a system can be built that produces credible offside verdicts purely from broadcast footage alone, then a comparable standard of objective analysis can be approximated for purposes such as performance analytics and coaching feedback in settings where \gls{var} is not deployed.
 
 \section{Aims and Objectives}%
 \label{sec:intro_aims}
 
-The aim of this dissertation is to design, implement, and evaluate a modular computer vision pipeline that produces offside or onside verdicts for events in broadcast association football footage, without relying on the multi-camera infrastructure used by professional systems.
+The aim of this final year project is to design, implement, and evaluate a modular computer vision pipeline that produces offside or onside verdicts for events in broadcast association football footage, without having access to the high-complexity automated offside system used professionally.
 
 This aim is decomposed into the following objectives:
 
 \begin{enumerate}
-    \item To acquire a representative dataset of broadcast offside events together with ground-truth annotations.
-    \item To implement a stage capable of detecting and localising all players visible in a given keyframe.
-    \item To implement a stage that assigns each detected player to one of the two competing teams based on visual appearance.
+    \item To compile a dataset of broadcast matches together with ground-truth offside annotations.
+    \item To extract a short clip surrounding each offside event, with sufficient temporal leeway to capture both the live feed and any available replay.
+    \item To implement an interface in which the user is presented with the frames of a clip and is able to identify the exact frame in which the ball was played.
+    \item To implement a system that detects players and assigns each detection to a bounding box, and further assigns each bounding box to one of the two outfield teams based on the colour of their kit.
     \item To implement a homography estimation stage that maps positions in the broadcast image plane to real-world coordinates on a regulation pitch.
     \item To implement a final decision stage that evaluates the offside condition geometrically, by comparing the position of the relevant attacker against that of the second-to-last defender.
     \item To evaluate the end-to-end accuracy of the system against the ground-truth annotations provided with the dataset, and to identify the principal failure modes of the pipeline.
 \end{enumerate}
 
-The evaluation chapter assesses the system explicitly against these objectives.
-
 \section{Approach}%
 \label{sec:intro_approach}
 
-The overall task is decomposed into a sequence of independently testable stages, each of which addresses one well-defined sub-problem of automated offside adjudication.
+The overall task is decomposed into a number of independently testable stages, each of which addresses a key part of detecting an offside event.
 
-The pipeline operates as follows. Match clips are obtained from the publicly available SoccerNet dataset and trimmed to short windows surrounding each known offside event. From each clip, the keyframe corresponding to the moment at which the ball is played is identified. Players visible in that keyframe are then detected using a pretrained \gls{yolo} model, in its YOLO11 variant, which produces a bounding box for each player on the pitch. Each detection is subsequently assigned to one of the two teams by clustering the dominant kit colour of its bounding box in CIE Lab colour space using K-Means.
+Full game broadcasts are obtained from the SoccerNet dataset and from each game a number of short window clips surrounding each known offside event are extracted. From each clip, the keyframe corresponding to the exact moment the ball is played is identified. Players visible in that keyframe are then detected using a pretrained \gls{yolo} model, in its YOLO11 variant, which produces a bounding box for each player on the pitch. Each detection is subsequently assigned to one of the two teams by clustering the dominant kit colour of its bounding box in CIE Lab colour space using K-Means clustering.
 
-A homography between the broadcast image plane and a real-world pitch coordinate system is then estimated. This is done by identifying a small number of pitch landmarks --- such as line intersections, corner flags, and centre-circle features --- in the keyframe, pairing each with its known coordinate on the regulation pitch, and computing the perspective transformation that best maps between the two using \gls{ransac}. Once the homography is known, every player position can be reprojected onto the pitch in metric coordinates.
+A homography between the broadcast image plane and a real-world pitch coordinate system is then estimated. This is done by identifying a number of relevant pitch landmarks --- such as penalty box corners, halfway line intersections, and corner flags --- pairing each with its actual coordinate on the regulation pitch, and computing the perspective transformation that best maps between the two using \gls{ransac}. Once the homography is known, every player position can be reprojected onto the pitch in metric coordinates.
 
-Finally, the offside condition is evaluated geometrically. The attacking team, the direction of attack, the attacker whose position is to be assessed, and the second-to-last defender of the opposing team are identified, and the reprojected positions of the two players, projected onto the direction of attack, determine whether the attacker was onside or offside at the moment of the pass, together with the offset in metres.
+Finally, the offside condition is evaluated geometrically. The attacking team, the direction of attack, the attacker who receives the ball, and the second-to-last defender of the opposing team are identified, and the reprojected positions of the two players, projected onto the direction of attack, determine whether the attacker was onside or offside at the moment of the pass, together with the offset in metres.
 
 \section{Assumptions and Scope}%
 \label{sec:intro_scope}
 
 The scope of the system has been deliberately constrained to the broadcast single-camera setting, and several practical assumptions follow from that choice.
 
-The first assumption is that the input footage uses the standard wide-angle main broadcast view typically employed for live coverage. The system is not designed to handle replays, close-up shots, or extreme alternative angles.
+The first assumption is that the input footage uses a standard wide-angle main broadcast view, which is typically employed for live coverage. The system cannot operate on close-up shots since it requires a minimum number of visible pitch landmarks; a standard wide-angle view provides sufficient coverage to carry out the full pipeline.
 
-The second assumption is that the keyframe corresponding to the moment of the pass is selected manually rather than detected automatically. Identifying the precise frame at which the ball leaves the foot of the passing player is itself a non-trivial computer vision problem, and removing this manual step is identified as future work rather than a contribution of the present dissertation.
+The second assumption is that the keyframe corresponding to the moment of the pass is selected manually rather than detected automatically. Identifying the precise frame at which the ball leaves the passing player's foot is crucial, since even one frame of error can change the attacker's classification from offside to onside given the speed of play. Removing this manual step is identified as future work rather than a contribution of the present work.
 
 The third assumption is that the pitch landmarks used to estimate the homography are picked manually for each event. As with keyframe selection, automating the detection of these landmarks is left to future work.
-
-Finally, the offside decision in this dissertation is restricted to the geometric component of Law 11, namely whether the relevant attacker was nearer to the opponents' goal line than both the ball and the second-to-last defender at the moment of the pass. The further qualification that the player must be \emph{interfering with play} is a refereeing judgement that lies outside the scope of any purely geometric system, and is therefore not addressed here.
 
 \section{Report Structure}%
 \label{sec:intro_structure}
 
-The remainder of this report is organised as follows. Chapter~\ref{chp:background} presents the relevant background --- the offside law itself, the principles of object detection and projective geometry that underpin the system, and a critical review of related work in automated football event detection. Chapter~\ref{chp:design} describes the design of the pipeline, motivating the choice of components and discussing alternatives that were considered. Chapter~\ref{chp:implementation} documents the implementation of each stage, including the supporting annotation interfaces developed for keyframe selection, landmark picking, and offside-verdict review. Chapter~\ref{chp:evaluation} presents the evaluation of the system, comparing the verdicts produced against ground-truth annotations and analysing the principal failure modes. Chapter~\ref{chp:future_work} outlines avenues for future work, and Chapter~\ref{chp:conclusions} draws together the main conclusions of the dissertation.
+The remainder of this report is organised as follows. Chapter~\ref{chp:background} covers the offside law, object detection, projective geometry, and a review of related work. Chapter~\ref{chp:design} details the pipeline design and motivates component choices. Chapter~\ref{chp:implementation} documents each stage and the supporting annotation interfaces. Chapter~\ref{chp:evaluation} evaluates accuracy against ground-truth annotations and analyses failure modes. Chapters~\ref{chp:future_work} and~\ref{chp:conclusions} outline future directions and conclusions.

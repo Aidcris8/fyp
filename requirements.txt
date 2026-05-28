@@ -1,0 +1,26 @@
+# FYP — Football Offside Detection
+# Python 3.11 (developed and tested on 3.11.14)
+#
+# Install with:   pip install -r requirements.txt
+#
+# Also required on the system PATH but not pip-installable:
+#   - ffmpeg            (used by extract_clips.py as a subprocess)
+#   - GNU make          (drives the pipeline via Makefile)
+
+# --- core numerics & image processing ---------------------------------------
+numpy==2.3.5
+opencv-python==4.13.0.92
+
+# --- machine learning -------------------------------------------------------
+scikit-learn==1.8.0           # K-Means + StandardScaler in team_identification.py
+ultralytics==8.4.19           # YOLO11x-seg player detection + segmentation
+
+# Torch is a transitive dependency of ultralytics. Pinned here for
+# reproducibility. The version below was built against CUDA 12.1; on a
+# CPU-only or non-NVIDIA machine, install torch separately from
+# https://pytorch.org/get-started/locally/ before running pip install -r.
+torch==2.5.1
+torchvision==0.20.1
+
+# --- dataset access ---------------------------------------------------------
+SoccerNet==0.1.62             # download_videos.py / download_soccernet.py

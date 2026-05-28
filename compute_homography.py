@@ -51,14 +51,6 @@ PITCH_LINES = [
 ]
 
 
-def project_point(H, x, y):
-    """Project image-space (x, y) to world via H, with safe div-by-zero guard."""
-    p = H @ np.array([x, y, 1.0])
-    if abs(p[2]) < 1e-9:
-        return None
-    return float(p[0] / p[2]), float(p[1] / p[2])
-
-
 def project_inv(H_inv, rx, ry):
     """Project world (rx, ry) back into image space via H_inv."""
     p = H_inv @ np.array([rx, ry, 1.0])
@@ -70,10 +62,18 @@ def project_inv(H_inv, rx, ry):
 with open(POINTS_FILE) as f:
     all_points = json.load(f)
 
+# Load existing matrices so re-runs only compute new keyframes
 results = {}
+if os.path.exists(OUTPUT_FILE):
+    with open(OUTPUT_FILE) as f:
+        results = json.load(f)
+
 print("Computing homography matrices (improved)...\n")
 
 for kf_name, points in sorted(all_points.items()):
+    if kf_name in results:
+        print(f"  Skipping (already computed): {kf_name}")
+        continue
     if len(points) < 4:
         print(f"  SKIP {kf_name} — only {len(points)} points")
         continue
@@ -81,11 +81,14 @@ for kf_name, points in sorted(all_points.items()):
     image_pts = np.array([p["image"] for p in points], dtype=np.float32)
     real_pts = np.array([p["real"] for p in points], dtype=np.float32)
 
-    # IMPROVEMENT 13: tighter RANSAC threshold (0.5 m instead of 2.0 m).
-    # 2 m is wider than two strides — almost any clicked point would have been
-    # accepted as an inlier. 0.5 m forces genuinely consistent correspondences.
+    # RANSAC threshold in world-space metres. 0.5 m sounds tight but at
+    # broadcast-camera scale 1 pixel near the center circle ≈ 0.1 m, so
+    # 0.5 m = only ~5 pixels of allowed click error — too strict. Manual
+    # clicks on pitch markings are typically ±10-15 px, which at the far
+    # touchline scale is ±2-3 m. 2.0 m keeps correctly-picked points as
+    # inliers while still rejecting genuinely wrong clicks.
     H_ransac, mask = cv2.findHomography(
-        image_pts, real_pts, cv2.RANSAC, ransacReprojThreshold=0.5
+        image_pts, real_pts, cv2.RANSAC, ransacReprojThreshold=2.0
     )
 
     if H_ransac is None:
@@ -98,16 +101,23 @@ for kf_name, points in sorted(all_points.items()):
     inlier_real = real_pts[inliers_mask]
     n_inliers = int(inliers_mask.sum())
 
-    # IMPROVEMENT 14: refit on the RANSAC inliers using ordinary
-    # least-squares (method=0). RANSAC picks the best fit among random
-    # sub-samples; refitting on the inlier set with LM produces the
-    # maximum-likelihood estimate, which is usually tighter than the RANSAC
-    # fit alone.
+    # Refit on RANSAC inliers with ordinary least-squares for the tightest fit.
     H = H_ransac
     if n_inliers >= 4:
         H_refit, _ = cv2.findHomography(inlier_image, inlier_real, method=0)
         if H_refit is not None:
             H = H_refit
+
+    # Axis-orientation sanity check: all user-picked image points must project
+    # Sign normalisation: H and -H are the same projective transform, but only
+    # one sign gives H[2]*pt > 0 for points on the physical pitch. Normalise so
+    # the centroid of the pick points always lands on the positive side — this
+    # makes the invalid_zone_frac check below meaningful.
+    centroid = image_pts.mean(axis=0)
+    centroid_denom = float(H[2] @ np.array([centroid[0], centroid[1], 1.0]))
+    if centroid_denom < 0:
+        H = -H
+        print(f"      [sign-norm] negated H so pick-point region has H[2]>0")
 
     H_inv = np.linalg.inv(H)
 
@@ -140,11 +150,32 @@ for kf_name, points in sorted(all_points.items()):
         world_errors_m.append(err)
     mean_world_error_m = float(np.mean(world_errors_m)) if world_errors_m else 999.0
 
+    # H[2] validity check: sample a grid of image points and count how many
+    # have a negative projective denominator. A negative denominator means
+    # the point is projected to the wrong side of the world plane — any world_x
+    # derived from it is sign-flipped garbage. Frames with many invalid pixels
+    # in the player zone need their pick_points redone.
+    grid_xs = np.linspace(100, 1180, 12)
+    grid_ys = np.linspace(200, 580, 8)
+    bad = 0
+    total_grid = 0
+    for gx in grid_xs:
+        for gy in grid_ys:
+            denom = H[2, 0]*gx + H[2, 1]*gy + H[2, 2]
+            total_grid += 1
+            if denom <= 0:
+                bad += 1
+    invalid_frac = bad / total_grid
+    validity_warn = f"  *** WARNING: {bad}/{total_grid} grid cells have H[2]<=0 ({invalid_frac:.0%} of player zone invalid) — re-pick points ***" if invalid_frac > 0.05 else ""
+
     print(f"  OK  {kf_name}")
     print(f"      Inliers: {n_inliers}/{len(points)}")
     print(f"      Symmetric pixel error (all):     {mean_pixel_error:.2f} px")
     print(f"      Symmetric pixel error (inliers): {mean_pixel_error_inliers:.2f} px")
     print(f"      Legacy world error (inliers):    {mean_world_error_m:.3f} m")
+    print(f"      H[2]<=0 in player zone:          {bad}/{total_grid} ({invalid_frac:.0%})")
+    if validity_warn:
+        print(validity_warn)
 
     results[kf_name] = {
         "H": H.tolist(),
@@ -153,6 +184,7 @@ for kf_name, points in sorted(all_points.items()):
         "mean_error_metres": round(mean_world_error_m, 4),
         "mean_pixel_error_all": round(mean_pixel_error, 3),
         "mean_pixel_error_inliers": round(mean_pixel_error_inliers, 3),
+        "invalid_zone_frac": round(invalid_frac, 3),
     }
 
     # IMPROVEMENT 17: validation overlay — projects the FIFA pitch model back

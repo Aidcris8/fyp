@@ -5,10 +5,10 @@
 # Run `make <target>` to build one stage and its prerequisites.
 # Run `make help` to see all targets.
 #
-# Note: download_soccernet.py and download_videos.py are NOT part of the
-# auto-build chain — they involve large downloads with hardcoded credentials,
-# so we keep them as one-off manual steps. Run them by hand once per dataset
-# change, then `make` handles everything from clip extraction onward.
+# Note: scan_offsides.py and download_videos.py are NOT part of the
+# auto-build chain — they involve large downloads and dataset-selection
+# choices, so we keep them as one-off manual steps. Run them by hand once per
+# dataset change, then `make` handles everything from clip extraction onward.
 # ============================================================
 
 PYTHON := python
@@ -19,6 +19,11 @@ PYTHON := python
 # of the stage's recipe.
 CLIPS_STAMP     := data/clips/.stamp
 KEYFRAMES_STAMP := data/keyframes/.stamp
+
+# Marker touched by download_videos.py after each download run. When it is
+# newer than the clips stamp, Make knows new game data arrived and re-runs
+# clip extraction (which is incremental — existing clips are skipped).
+DOWNLOAD_STAMP  := data/soccernet/.download_stamp
 
 # ---- canonical output files (Make tracks these directly) -------------------
 KEYFRAMES_JSON  := data/keyframes.json
@@ -40,9 +45,10 @@ all: $(MATRICES) $(DETECTIONS)
 # ============================================================
 
 # ---- Stage 1: extract clips -------------------------------------------------
-# Re-runs whenever extract_clips.py is edited. Clip extraction is incremental
-# inside the script (skips clips that already exist), so it's safe to re-run.
-$(CLIPS_STAMP): extract_clips.py
+# Re-runs when extract_clips.py is edited OR download_videos.py was run since
+# the last clip extraction. Clip extraction is incremental (skips existing
+# clips), so only newly downloaded game videos are touched.
+$(CLIPS_STAMP): extract_clips.py $(DOWNLOAD_STAMP)
 	@mkdir -p data/clips
 	$(PYTHON) extract_clips.py
 	@touch $@
@@ -106,7 +112,7 @@ dry:
 .PHONY: clean-derived
 clean-derived:
 	rm -rf data/team_identification data/homography_validation data/offside_results
-	rm -f $(DETECTIONS) $(MATRICES)
+	rm -f $(DETECTIONS) $(MATRICES) data/offside_verdicts.json
 	@echo "Cleaned derived outputs. Next 'make' will rebuild team-id and homography only."
 
 # ---- nuclear: also wipes clips, keyframes, manual annotations -------------

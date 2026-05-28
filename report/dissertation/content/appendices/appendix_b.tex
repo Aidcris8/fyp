@@ -1,6 +1,78 @@
 \chapter{Source Code Structure}%
 \label{app:code}
 
-% TODO: brief map of the source tree on the accompanying digital media.
-% Per FYP guidelines, full source listings should NOT appear in the report ---
-% only short illustrative excerpts in the Implementation chapter.
+The complete source code is provided on the accompanying digital media. This appendix describes the layout of the project directory and the role of each file. Full source listings are not included in this report in accordance with the FYP guidelines.
+
+\section*{Top-Level Directory}
+
+\begin{tabularx}{\linewidth}{lX}
+\hline
+File / Directory & Purpose \\
+\hline
+\texttt{Makefile} & Automates the non-interactive pipeline stages. \\
+\texttt{download\_soccernet.py} & Downloads SoccerNet event annotation files. \\
+\texttt{download\_videos.py} & Downloads 720p match video files from SoccerNet. \\
+\texttt{scan\_offsides.py} & Displays a summary of available offside events and download status. \\
+\texttt{extract\_clips.py} & Extracts 35-second MP4 clips around each annotated offside event. \\
+\texttt{annotate\_keyframes.py} & Browser interface (port 5000) for selecting the pass frame in each clip. \\
+\texttt{export\_keyframes.py} & Exports the annotated frame from each clip as a JPEG image. \\
+\texttt{team\_identification.py} & YOLO11x-seg detection and K-Means team assignment on all keyframes. \\
+\texttt{pick\_points.py} & Browser interface (port 5001) for entering pitch landmark correspondences. \\
+\texttt{compute\_homography.py} & Estimates homography matrices from landmark correspondences. \\
+\texttt{offside\_checker.py} & Browser interface (port 5002) for reviewing and recording offside verdicts. \\
+\hline
+\end{tabularx}
+
+\section*{Data Directory}
+
+All pipeline inputs and outputs are stored under \texttt{data/}. This directory is not included on the digital media (video files are large); it is recreated by running the pipeline.
+
+\begin{tabularx}{\linewidth}{lX}
+\hline
+Path & Contents \\
+\hline
+\texttt{data/soccernet/} & Downloaded SoccerNet annotation files and match videos. \\
+\texttt{data/clips/} & Extracted MP4 clips, one per annotated offside event. \\
+\texttt{data/keyframes.json} & Maps each clip filename to its annotated frame index. \\
+\texttt{data/keyframes/} & Exported JPEG keyframe images. \\
+\texttt{data/player\_detections.json} & Bounding boxes, team labels, and foot positions per keyframe. \\
+\texttt{data/team\_identification/} & Visualisation images with colour-coded team bounding boxes. \\
+\texttt{data/homography\_points.json} & Image--world landmark correspondences per keyframe. \\
+\texttt{data/homography\_matrices.json} & Estimated $3\times3$ homography matrices and reprojection errors. \\
+\texttt{data/homography\_validation/} & Validation overlay images with projected pitch line model. \\
+\texttt{data/offside\_verdicts.json} & Recorded verdicts, margins, and metadata per event. \\
+\texttt{data/offside\_results/} & Annotated keyframe images with offside line and verdict overlay. \\
+\hline
+\end{tabularx}
+
+\section*{Report Directory}
+
+\begin{tabularx}{\linewidth}{lX}
+\hline
+Path & Contents \\
+\hline
+\texttt{report/dissertation/} & LaTeX source for this final year project. \\
+\texttt{report/dissertation/main.tex} & Root document; includes all chapters and configuration. \\
+\texttt{report/dissertation/content/chapters/} & One subdirectory per chapter containing the \texttt{.tex} source. \\
+\texttt{report/dissertation/content/appendices/} & Appendix source files. \\
+\texttt{report/dissertation/references.bib} & BibTeX reference database. \\
+\hline
+\end{tabularx}
+
+\section*{Dependencies}
+
+The pipeline was developed and tested under the following environment:
+
+\begin{tabularx}{\linewidth}{lX}
+\hline
+Component & Version \\
+\hline
+Python & 3.11 \\
+ultralytics (YOLO11x-seg) & 8.3.x \\
+OpenCV (\texttt{opencv-python}) & 4.9.x \\
+scikit-learn & 1.4.x \\
+NumPy & 1.26.x \\
+FFmpeg & 6.x \\
+Operating system & Ubuntu 22.04 (WSL2 on Windows 11) \\
+\hline
+\end{tabularx}

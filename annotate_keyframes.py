@@ -13,7 +13,7 @@ OUTPUT_FILE = "data/keyframes.json"
 ALL_CLIPS = sorted([f for f in os.listdir(CLIPS_DIR) if f.endswith(".mp4")])
 print(f"Found {len(ALL_CLIPS)} total clips in {CLIPS_DIR}")
 
-# load existing annotations
+# load existing clips
 if os.path.exists(OUTPUT_FILE):
     with open(OUTPUT_FILE) as f:
         data = json.load(f)
@@ -30,16 +30,20 @@ else:
     annotations = {}
     skipped = set()
 
-# show clips not yet annotated or skipped
+# keyframes.json evolves, old format was simply clip name.mp4: 247, new format wraps that in a keyframe key and adds a skipped list
 VERIFIED_CLIPS = [c for c in ALL_CLIPS if c not in annotations and c not in skipped]
 print(f"Already annotated: {len(annotations)}")
 print(f"Already skipped: {len(skipped)}")
 print(f"Remaining to annotate: {len(VERIFIED_CLIPS)}")
 
+#only clips you have not touched yet are annotated, re running always resumes exactly where you left off 
+
+#if the length of clips not yet annotated is 0, it means you have annotated every clip
 if len(VERIFIED_CLIPS) == 0:
     print("All clips already annotated or skipped!")
     exit(0)
 
+#state dictionary, shows which clip youre currently on, which frame within that clip, all decoded frames of current clip in RAM
 state = {
     "clip_index": 0,
     "frame_index": 0,
@@ -48,6 +52,8 @@ state = {
     "done": False
 }
 
+#read entire clip into RAM as a list of NumPy arrays
+#resize frames to 960x540, deliberate downscale, raking less memory
 def load_clip(clip_name):
     print(f"Loading {clip_name}...")
     cap = cv2.VideoCapture(os.path.join(CLIPS_DIR, clip_name))
@@ -67,10 +73,13 @@ def save():
     with open(OUTPUT_FILE, "w") as f:
         json.dump({"keyframes": annotations, "skipped": list(skipped)}, f, indent=2)
 
+#converts a frame to a jpeg since browsers cant receive raw numpy arrays
 def frame_to_base64(frame):
     _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
     return base64.b64encode(buffer).decode('utf-8')
 
+#tries clips one by one until it finds one that loads, if file is corrupt, return 0 frames
+#automatically add clip to skipped set and try the next one 
 def load_next_valid_clip():
     """Advance clip_index until a clip with at least 1 frame is loaded, auto-skipping unreadable ones."""
     while state["clip_index"] < len(VERIFIED_CLIPS):
@@ -90,6 +99,7 @@ if not load_next_valid_clip():
     print("No readable clips found. Exiting.")
     exit(0)
 
+#HTML/CSS/JavaScript Block
 HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -434,7 +444,7 @@ HTML = """
             if (m > 0) return m + ':' + Math.floor(s).toString().padStart(2, '0');
             return s.toFixed(2) + 's';
         }
-
+        
         function updateFrame(data) {
             currentFrame = data.frame_index;
             totalFrames = data.total_frames;
@@ -530,16 +540,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+   
     def do_GET(self):
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
 
+        #returns HTML page
         if parsed.path == '/':
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(HTML.encode())
 
+        #reads idx, clamps it to valid range, encodes fram and returns the response
         elif parsed.path == '/frame':
             if not state["frames"]:
                 self.send_response(503)
@@ -567,6 +580,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(response).encode())
 
+        #saves immediately so crash doesnt lose work, then load next clip
         elif parsed.path == '/mark':
             idx = int(params.get('idx', [0])[0])
             clip_name = VERIFIED_CLIPS[state["clip_index"]]
@@ -583,6 +597,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"done": not has_more}).encode())
 
+        #same thing but adds to skipped set
         elif parsed.path == '/skip':
             clip_name = VERIFIED_CLIPS[state["clip_index"]]
             skipped.add(clip_name)
@@ -602,6 +617,9 @@ print(f"\nStarting annotator at http://localhost:{PORT}")
 print("Open that URL in your Windows browser")
 print("Press Ctrl+C to stop the server\n")
 
+#server startup, server running on a background thread meaning it dies automatically when main thread exits
+#main thread loops until either all clips done or user presses Ctrl + C
+# 0.0.0 done so it listens on all network interfaces
 server = http.server.HTTPServer(('0.0.0.0', PORT), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 

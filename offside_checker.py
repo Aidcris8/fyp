@@ -11,7 +11,8 @@ KEYFRAMES_DIR = "data/keyframes"
 DETECTIONS_FILE = "data/player_detections.json"
 HOMOGRAPHY_FILE = "data/homography_matrices.json"
 POINTS_FILE = "data/homography_points.json"
-OUTPUT_DIR = "data/offside_results"
+OUTPUT_DIR    = "data/offside_results"
+VERDICTS_FILE = "data/offside_verdicts.json"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 with open(DETECTIONS_FILE) as f:
@@ -21,16 +22,42 @@ with open(HOMOGRAPHY_FILE) as f:
 with open(POINTS_FILE) as f:
     all_corr_points = json.load(f)
 
-def has_reliable_slope(kf):
-    return kf in all_homographies
+# Load persisted verdicts so completed frames are skipped on restart.
+if os.path.exists(VERDICTS_FILE):
+    with open(VERDICTS_FILE) as f:
+        all_verdicts = json.load(f)
+else:
+    all_verdicts = {}
 
-USABLE_FRAMES = sorted([
+def save_verdicts():
+    with open(VERDICTS_FILE, "w") as f:
+        json.dump(all_verdicts, f, indent=2)
+
+INVALID_ZONE_THRESHOLD = 0.15  # skip frames where >15% of the player zone has H[2]<=0
+
+def has_reliable_homography(kf):
+    if kf not in all_homographies:
+        return False
+    frac = all_homographies[kf].get("invalid_zone_frac", 0.0)
+    if frac > INVALID_ZONE_THRESHOLD:
+        print(f"  [SKIP] {kf[-60:]}  — {frac:.0%} of player zone invalid (re-pick points)")
+        return False
+    return True
+
+ALL_FRAMES = sorted([
     kf for kf in all_detections
-    if kf in all_homographies and has_reliable_slope(kf)
+    if has_reliable_homography(kf)
 ])
-print(f"Usable frames: {len(USABLE_FRAMES)}")
+USABLE_FRAMES = [kf for kf in ALL_FRAMES if kf not in all_verdicts]
+print(f"Total eligible frames : {len(ALL_FRAMES)}")
+print(f"Already done          : {len(all_verdicts)}")
+print(f"Remaining this session: {len(USABLE_FRAMES)}")
 for kf in USABLE_FRAMES:
-    print(f"  {kf.split('_frame')[0][-30:]}...frame{kf.split('_frame')[1]}")
+    parts = kf.split('_frame')
+    if len(parts) >= 2:
+        print(f"  {parts[0][-30:]}...frame{parts[1]}")
+    else:
+        print(f"  {kf[-50:]}")
 
 state = {
     "index": 0,
@@ -41,12 +68,19 @@ state = {
     "result": None,
 }
 
+def attacking_larger_wx(H, attacking_right):
+    """Return True if the attacking direction corresponds to increasing world_x.
+    Samples the homography at two image x-positions to detect whether the
+    homography axis is flipped relative to image-space left/right."""
+    left_wx,  _ = project_point(H, 320, 360)
+    right_wx, _ = project_point(H, 960, 360)
+    image_right_is_world_right = right_wx > left_wx
+    return attacking_right == image_right_is_world_right
+
 def find_auto_defender(kf, attacking_team, attacking_right):
-    """Return index of the most-advanced outfield defender. Each defender's
-    leading bbox edge (x2 if attacking right, else x1) at foot level y2 is
-    projected through H into world space, then we pick the extreme world-X.
-    This avoids the perspective bug where image-space x1/x2 picks the defender
-    nearest the camera rather than the one genuinely furthest up the pitch."""
+    """Return index of the most-advanced outfield defender using world-space
+    coordinates. Detects homography axis orientation so image-space
+    attacking_right is correctly translated to world-space direction."""
     players = all_detections[kf]["players"]
     H = np.array(all_homographies[kf]["H"])
     defending_team = 1 - attacking_team
@@ -54,19 +88,37 @@ def find_auto_defender(kf, attacking_team, attacking_right):
     if not defending:
         return None
 
-    def world_x(p):
+    going_larger = attacking_larger_wx(H, attacking_right)
+
+    def world_x_center(p):
         x1, y1, x2, y2 = p["box"]
-        edge_px = x2 if attacking_right else x1
-        wx, _ = project_point(H, edge_px, y2)
+        cx = (x1 + x2) / 2
+        wx, _ = project_point(H, cx, y2)
         return wx
 
-    ranked = sorted(defending, key=lambda ip: world_x(ip[1]), reverse=attacking_right)
-    direction = "max world-X" if attacking_right else "min world-X"
-    print(f"  Defending team T{defending_team} ranked by {direction}:")
-    for i, p in ranked:
+    def within_pitch(p):
         x1, y1, x2, y2 = p["box"]
-        edge_px = x2 if attacking_right else x1
-        print(f"    P{i}: edge_px={edge_px} y2={y2}  world_x={world_x(p):.2f}m")
+        cx = (x1 + x2) / 2
+        wx, wy = project_point(H, cx, y2)
+        return abs(wx) <= 55.0 and abs(wy) <= 36.0
+
+    # Exclude defenders whose foot projection falls outside the pitch boundary.
+    # These are almost always stewards or pitch-side personnel mis-detected as
+    # outfield players (a 105x68 m pitch means |X|>55 or |Y|>36 is impossible).
+    on_pitch = [(i, p) for i, p in defending if within_pitch(p)]
+    if not on_pitch:
+        on_pitch = defending  # fallback if filter removes everyone
+    else:
+        removed = len(defending) - len(on_pitch)
+        if removed:
+            print(f"  Pitch-boundary filter removed {removed} out-of-bounds defender(s)")
+
+    # Most advanced = smallest world_x if pushing toward larger wx, else largest
+    ranked = sorted(on_pitch, key=lambda ip: world_x_center(ip[1]), reverse=going_larger)
+    direction = "min world-X" if going_larger else "max world-X"
+    print(f"  Defending team T{defending_team} ranked by {direction} (going_larger_wx={going_larger}):")
+    for i, p in ranked:
+        print(f"    P{i}: center_world_x={world_x_center(p):.2f}m")
 
     chosen = ranked[0][0]
     print(f"  → Chosen: P{chosen}")
@@ -105,6 +157,63 @@ def get_line_slope(kf, offside_line_x, defender_y, H):
     print(f"  Slope from inverse homography: {slope:.3f}")
     return slope
 
+def _draw_offside_zone(img, line_pts, attacking_right, alpha=0.38):
+    """Darken the half of the image beyond the offside line (broadcast VAR look)."""
+    h, w = img.shape[:2]
+    (x_top, y_top), (x_bot, y_bot) = line_pts
+    if attacking_right:
+        polygon = np.array([[x_top, y_top], [w, y_top], [w, y_bot], [x_bot, y_bot]], np.int32)
+    else:
+        polygon = np.array([[0, y_top], [x_top, y_top], [x_bot, y_bot], [0, y_bot]], np.int32)
+    overlay = img.copy()
+    cv2.fillPoly(overlay, [polygon], (0, 0, 0), lineType=cv2.LINE_AA)
+    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+
+
+def _draw_verdict_button(img, is_offside):
+    """Draw a modern rounded-pill verdict button at the bottom centre.
+    Red for OFFSIDE, green for ONSIDE."""
+    h, w = img.shape[:2]
+
+    if is_offside:
+        bg_color = (60, 60, 235)     # bright red (BGR)
+        text = "OFFSIDE"
+    else:
+        bg_color = (95, 195, 95)     # bright TV green
+        text = "ONSIDE"
+
+    button_h = 60
+    radius = button_h // 2           # full pill — semicircle caps
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 1.05
+    thick = 2
+    text_size = cv2.getTextSize(text, font, scale, thick)[0]
+    button_w = text_size[0] + 80     # horizontal padding around the text
+
+    cx = w // 2
+    bottom_pad = 28
+
+    x1 = cx - button_w // 2
+    y2 = h - bottom_pad
+    y1 = y2 - button_h
+    x2 = cx + button_w // 2
+
+    overlay = img.copy()
+
+    # Pill body: middle rectangle + two semicircle caps
+    cv2.rectangle(overlay, (x1 + radius, y1), (x2 - radius, y2), bg_color, -1)
+    cv2.circle(overlay, (x1 + radius, y1 + radius), radius, bg_color, -1, lineType=cv2.LINE_AA)
+    cv2.circle(overlay, (x2 - radius, y1 + radius), radius, bg_color, -1, lineType=cv2.LINE_AA)
+
+    # Centred text
+    text_x = x1 + (button_w - text_size[0]) // 2
+    text_y = y1 + (button_h + text_size[1]) // 2 - 2
+    cv2.putText(overlay, text, (text_x, text_y), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
+
+    cv2.addWeighted(overlay, 0.95, img, 0.05, 0, img)
+
+
 def render_frame():
     kf, players, H = get_frame_data()
     img = cv2.imread(os.path.join(KEYFRAMES_DIR, kf))
@@ -131,10 +240,15 @@ def render_frame():
     if state["result"] is not None:
         res = state["result"]
         line_pts = res.get("line_image_pts")
+
         if line_pts:
+            # Darken the offside zone (everything beyond the line in the attacking direction)
+            _draw_offside_zone(img, line_pts, res.get("attacking_right", True))
+
+            # Offside line itself, drawn over the dimmed zone
             pt1 = tuple(map(int, line_pts[0]))
             pt2 = tuple(map(int, line_pts[1]))
-            cv2.line(img, pt1, pt2, (0, 255, 255), 2)
+            cv2.line(img, pt1, pt2, (0, 255, 255), 2, cv2.LINE_AA)
 
         sa = state["selected_attacker"]
         if sa is not None and sa < len(players):
@@ -142,8 +256,10 @@ def render_frame():
             # OFFSIDE → magenta (distinct from team-0 red); ONSIDE → green
             verdict_colour = (255, 0, 255) if res["offside"] else (0, 255, 0)
             cv2.rectangle(img, (x1, y1), (x2, y2), verdict_colour, 2)
-            cv2.putText(img, "OFFSIDE" if res["offside"] else "ONSIDE",
-                        (x1, y1 - 20), cv2.FONT_HERSHEY_SIMPLEX, 1.0, verdict_colour, 2)
+            # Verdict text now lives in the bottom banner (no putText here)
+
+        # Verdict button (red OFFSIDE / green ONSIDE)
+        _draw_verdict_button(img, res["offside"])
 
     _, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 88])
     return base64.b64encode(buffer).decode('utf-8'), img.shape[1], img.shape[0]
@@ -182,7 +298,8 @@ def compute_offside():
 
     offside_line_x = defender_x
 
-    if attacking_right:
+    going_larger = attacking_larger_wx(H, attacking_right)
+    if going_larger:
         is_offside = attacker_x > offside_line_x
     else:
         is_offside = attacker_x < offside_line_x
@@ -908,6 +1025,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             img_decoded = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             kf = USABLE_FRAMES[state["index"]]
             cv2.imwrite(os.path.join(OUTPUT_DIR, kf), img_decoded)
+            # Persist the verdict so this frame is skipped on restart.
+            if state["result"] is not None:
+                all_verdicts[kf] = {
+                    "offside":        state["result"].get("offside"),
+                    "margin_metres":  state["result"].get("margin_metres"),
+                    "attacking_team": state["attacking_team"],
+                    "attacking_right":state["attacking_right"],
+                }
+                save_verdicts()
             respond({"ok": True})
 
         elif parsed.path == '/reset':

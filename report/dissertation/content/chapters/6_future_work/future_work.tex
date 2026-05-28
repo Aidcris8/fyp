@@ -1,10 +1,32 @@
 \chapter{Future Work}%
 \label{chp:future_work}
 
-% Per FYP guidelines: ideas that evolved beyond the original scope, and
-% partial work that could be extended. Examples relevant to this project:
-% automatic ball-played detection (removing manual keyframe step),
-% multi-camera setups, real-time inference, broader event detection
-% (corners, fouls, goals).
+The presented system shows that purely broadcast-only offside detection is feasible, but a total of three manual steps still remain in the pipeline and some aspects of the geometric measurement could be improved. The three directions listed below are likely to have the greatest impact on system performance.
 
-\textit{To be written.}
+\section{Automated Keyframe Selection}%
+\label{sec:fw_keyframe}
+
+The most significant manual step within the system presented here is the manual selection of the keyframe indicating that the ball has left the passer's foot. This is ideally performed with single frame accuracy as one frame error can result in the wrong decision in the case of a marginal offside. This requires a module to first detect and track the ball in broadcast imagery, and then analyse the trajectory to determine the frame of the release. YOLO11 can already detect sports balls as a pre-trained class, meaning the only new requirement is analysis over time. The development of a CNN or RNN that predicts pass frame releases based on labelled pass-frames, would replace the annotator in most circumstances, and the interface used here could be retained for error cases.
+
+\section{Automated Pitch Landmark Detection}%
+\label{sec:fw_landmarks}
+
+Landmark picking is the most time-consuming manual stage. Automating it via semantic segmentation of pitch markings is feasible --- the SoccerNet benchmark includes a dedicated pitch calibration challenge~\cite{giancola2018soccernet} --- and would eliminate the primary bottleneck for large-scale deployment.
+
+\section{Automated Attacking Team and Player Selection}%
+\label{sec:fw_auto_selection}
+
+The offside checker currently requires the operator to specify the attacking team, the direction of attack, and the relevant attacker. All three could in principle be inferred automatically. The direction of attack can be estimated from the distribution of player positions relative to the ball, or from game context metadata provided by SoccerNet. The relevant attacker is typically the player nearest to the ball at the moment of the pass, which could be identified by combining the ball detection described above with a nearest-neighbour query over the detected player positions. Automating these selections would remove the last interactive step from the pipeline.
+
+\section{Body Keypoint Integration}%
+\label{sec:fw_keypoints}
+
+Law~11 measures certain body parts and not the midpoint of the bounding box. The current system calculates approximate foot position using the bottom midpoint of the bounding box, which introduces a systematic error for players who are not standing upright or whose feet are partially occluded. The precision can be geometrically improved by integrating a pose estimation model that outputs positions of knees, shoulders and ankles. This will mainly be helpful for the extreme cases where the actual margin of error for the system is 15-25 cm and the current estimation uncertainty is dominant. Panse and Mahabaleshwarkar~\cite{panse2020dataset} show that keypoint based offside measurement is possible on static images and adding this functionality to the complete end-to-end pipeline would be a straightforward next step.
+
+\section{Robustness of Team Identification}%
+\label{sec:fw_team_id}
+ The current K-Means clustering is problematic if the two competing teams have kits with very close Lab colour vectors. A better way would be to replace the custom six dimensional feature vector with an learned appearance embedding by a small CNN trained on labelled player crops. Temporal smoothing across a clip can further stabilise cluster membership: If a player changes their cluster label from frame t-1 to frame t, a moving average could smooth out such errors. Identifying the goalkeeper with their distinct shirt and position in relation to pitch area would also eliminate one of the many possible error sources for the defender ranking.
+
+\section{Geometric Ground Truth for Marginal Evaluation}%
+\label{sec:fw_groundtruth}
+ The current evaluation method relies on the decision of the match official as ground truth. However, these decisions are inaccurate at a threshold of less than 0.5 m. A rigorous evaluation of precision on the system for that range would require a set of player ground truth positions with centimeter precision (possible through triangulation or manual measurements from high-resolution still pictures). This would prove if system measurements at the boundary of the marginal range are actually accurate or systematically biased.

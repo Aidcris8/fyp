@@ -1,6 +1,92 @@
 \chapter{User Guide}%
 \label{app:user_guide}
 
-% TODO: how to run the pipeline end-to-end (download SoccerNet metadata,
-% scan offsides, download videos, extract clips, annotate keyframes,
-% run team identification, pick pitch points, run offside checker).
+This appendix describes how to run the offside detection pipeline end-to-end. All scripts are located in the project root directory. A \texttt{Makefile} automates the non-interactive stages; interactive stages require the operator to open a browser.
+
+\section*{Prerequisites}
+
+The following software must be installed before running the pipeline:
+
+\begin{itemize}
+  \item Python~3.10 or later
+  \item \texttt{pip} packages: \texttt{ultralytics}, \texttt{opencv-python}, \texttt{scikit-learn}, \texttt{numpy}, \texttt{SoccerNet}, \texttt{ffmpeg-python}
+  \item FFmpeg (available on the system \texttt{PATH})
+\end{itemize}
+
+Install Python dependencies with:
+\begin{verbatim}
+pip install ultralytics opencv-python scikit-learn numpy SoccerNet
+\end{verbatim}
+
+\section*{Step 1 — Download SoccerNet Metadata and Videos}
+
+These steps are performed once per dataset change and are not part of the automated build chain.
+
+\begin{enumerate}
+  \item Run \texttt{python download\_soccernet.py} to download the event annotation JSON files (\texttt{Labels-v2.json}) for all configured leagues and seasons into \texttt{data/soccernet/}.
+  \item Run \texttt{python scan\_offsides.py} to display a summary table of available offside events per game, together with download status. Use this to decide which games to download.
+  \item Run \texttt{python download\_videos.py} to download the 720p match video files for the configured game list into \texttt{data/soccernet/}.
+\end{enumerate}
+
+\section*{Step 2 — Extract Clips}
+
+Run \texttt{make} from the project root. The Makefile will automatically invoke \texttt{extract\_clips.py}, which reads each \texttt{Labels-v2.json} file, identifies all offside events, and uses FFmpeg to cut a 35-second clip (10\,s before to 25\,s after the event timestamp) into \texttt{data/clips/}. Clips that already exist are skipped.
+
+\section*{Step 3 — Annotate Keyframes}
+
+Run \texttt{python annotate\_keyframes.py}. Open \texttt{http://localhost:5000} in a browser. For each clip:
+
+\begin{itemize}
+  \item Use the arrow buttons or keyboard shortcuts (\texttt{←}/\texttt{→} for single frames, \texttt{Space} for +25 frames) to find the exact frame at which the ball leaves the passer's foot.
+  \item Press \textbf{Mark as keyframe} (or \texttt{Enter}) to record the frame index.
+  \item Press \textbf{Skip} if the clip is unsuitable (replay, close-up, relevant players not visible).
+\end{itemize}
+
+Progress is saved automatically after every action. Close the browser tab when all clips are processed. Annotations are written to \texttt{data/keyframes.json}.
+
+\section*{Step 4 — Export Keyframes and Detect Players}
+
+Run \texttt{make}. The Makefile will:
+\begin{enumerate}
+  \item Run \texttt{export\_keyframes.py} to extract the annotated JPEG frame from each clip into \texttt{data/keyframes/}.
+  \item Run \texttt{team\_identification.py} to detect players with YOLO11x-seg, assign team labels via K-Means, and write bounding boxes and team assignments to \texttt{data/player\_detections.json}. Visualisation images are written to \texttt{data/team\_identification/}.
+\end{enumerate}
+
+\section*{Step 5 — Pick Pitch Landmarks}
+
+Run \texttt{python pick\_points.py}. Open \texttt{http://localhost:5001} in a browser. For each keyframe:
+
+\begin{itemize}
+  \item Click on a visible pitch landmark (line intersection, corner flag, penalty spot, goalpost base, 6-yard box corner, etc.).
+  \item Enter the real-world FIFA pitch coordinates of that landmark in metres in the input fields provided. The pitch origin is at the centre spot; positive x is towards the right goal, positive y is towards the top touchline.
+  \item Add at least four correspondences, then press \textbf{Submit}.
+  \item Skip frames where fewer than four landmarks are clearly identifiable.
+\end{itemize}
+
+Correspondences are saved to \texttt{data/homography\_points.json}.
+
+\section*{Step 6 — Compute Homographies}
+
+Run \texttt{make}. The Makefile invokes \texttt{compute\_homography.py}, which estimates a homography matrix for each keyframe using the two-pass RANSAC procedure and writes all matrices to \texttt{data/homography\_matrices.json}. Validation overlay images (pitch line model projected into each keyframe) are written to \texttt{data/homography\_validation/} for inspection.
+
+\section*{Step 7 — Run the Offside Checker}
+
+Run \texttt{make offside}. Open \texttt{http://localhost:5002} in a browser. For each frame:
+
+\begin{itemize}
+  \item Select the \textbf{attacking team} (Team~0 or Team~1) from the dropdown.
+  \item Select the \textbf{direction of attack} (left or right).
+  \item Click on the bounding box of the \textbf{attacker} who received the pass. The system automatically highlights the second-to-last defender.
+  \item Review the offside line overlay and press \textbf{Save result} to record the verdict.
+\end{itemize}
+
+Verdicts, margins, and metadata are written to \texttt{data/offside\_verdicts.json}. Frames already processed are skipped on restart.
+
+\section*{Resuming Interrupted Sessions}
+
+All three interactive interfaces save progress after every confirmed action. To resume:
+\begin{itemize}
+  \item Keyframe annotator: re-run \texttt{python annotate\_keyframes.py}; already annotated and skipped clips are automatically excluded.
+  \item Landmark picker: re-run \texttt{python pick\_points.py}; frames with four or more existing correspondences are skipped.
+  \item Offside checker: re-run \texttt{make offside}; frames already in \texttt{offside\_verdicts.json} are skipped.
+\end{itemize}

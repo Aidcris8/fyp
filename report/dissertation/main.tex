@@ -1,6 +1,11 @@
 \documentclass{fict}
 
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric}
+\usepackage{tabularx}
+
 \addbibresource{references.bib}
+\ExecuteBibliographyOptions{maxbibnames=99}
 
 \input{content/glossary}
 \input{content/acronyms}
@@ -21,8 +26,9 @@
 \input{content/acknowledgements.tex}
 \clearpage{}
 
-\tableofcontents{}
+\phantomsection
 \addcontentsline{toc}{chapter}{Contents}
+\tableofcontents{}
 \clearpage{}
 
 \listoffigures{}
@@ -37,9 +43,6 @@
 \addcontentsline{toc}{chapter}{List of Abbreviations}
 \clearpage{}
 
-\printglossary[nonumberlist,title=Glossary of Symbols]
-\addcontentsline{toc}{chapter}{Glossary of Symbols}
-\clearpage{}
 
 \mainmatter{}
 \pagestyle{MainMatter}

@@ -12,31 +12,121 @@
 \section{The Offside Rule}%
 \label{sec:bg_offside_rule}
 
-% TODO: FIFA Law 11; the geometric condition; the moment of judgement (when
-% the ball is played); what counts as the second-to-last defender; common
-% edge cases.
+The offside rule is classified as Law~11 of the Laws of the Game, established by the \gls{ifab}~\cite{ifab2023laws}. It was originally implemented to prevent attacking players from gaining an advantage by positioning themselves closer to the opponents' goal line than both the ball and the defending team at the moment the ball is played.
+
+A player is deemed to be in an offside position if any body part, excluding arms, is closer to the opponents' goal line than both the ball and the second-to-last opponent. A player who is level with the second-to-last opponent is not ahead of them and is therefore considered onside. The deepest player on the defending side is almost always the goalkeeper; consequently, the offside line in practice is defined by the rearmost outfield defender of the opposing team. This is exactly how the offside line is identified in the present system, as described in Chapter~\ref{chp:design}.
+
+Figure~\ref{fig:offside_diagram} illustrates this condition as it appears in a real broadcast frame. The red attacker near the lower portion of the image is positioned ahead of the rearmost white/light-blue defender, placing them beyond the offside line at the moment the ball is played.
+
+\begin{figure}[!ht]
+  \centering
+  \includegraphics[width=0.75\linewidth]{offside_broadcast.jpg}
+  \caption{A broadcast frame from a Premier League match illustrating a potential offside situation. The attacking team (red) is pushing forward towards the goal visible on the left. The rearmost outfield defender of the defending side (white/light blue) defines the offside line; any attacker whose body is ahead of that defender at the moment the ball is played is in an offside position. The red attacker visible near the lower edge of the frame is positioned ahead of this defender, placing them in an offside position. The pitch markings and goal area visible in the frame are the same landmarks used by the homography estimation stage of the present system.}
+  \label{fig:offside_diagram}
+\end{figure}
+
+The offside condition is assessed at the precise moment the ball is played by the passer, not at the moment the receiving player touches it. This distinction is consequential: a player in an onside position when the ball is released may subsequently move into an offside position before it arrives, and vice versa. Identifying the exact frame at which the ball leaves the passer's foot is therefore essential for any automated adjudication system and represents a non-trivial detection problem in its own right. The present method addresses this difficulty through a semi-automated approach in which user input is used to handle keyframe selection, as described in Chapter~\ref{chp:design}.
+
+It is important to note that being in an offside position is not in itself an offence. A player may be in an offside position yet have no involvement in the play. However, being in a position that interferes with play or with an opponent while offside is an offence. This rule involves a degree of subjectivity, as there is no precise definition of interfering with play, and referees are often inconsistent with these decisions. Such judgements cannot be automated in any reliable way and therefore lie outside the scope of the present work, as noted in Section~\ref{sec:intro_scope}.
+
+Correct application of Law~11 therefore requires measuring the position of the relevant attacker relative to the second-to-last defender, both sampled at the exact same moment in time. The geometric component of this requirement is, in principle, amenable to automated measurement from image data, and it is this component that the present system addresses.
 
 \section{Object Detection}%
 \label{sec:bg_detection}
 
-% TODO: one-stage vs.\ two-stage detectors, \gls{cnn} backbones, the
-% \gls{yolo} family. Background only --- save state-of-the-art comparison
-% for the Literature Review section.
+Object detection is the computer vision task of simultaneously detecting all occurrences of multiple classes within a single image. The output of an object detector is a set of axis-aligned bounding boxes along with corresponding class labels and associated confidence values.
+
+Early deep learning architectures for object detection relied on a two-stage procedure in which a region proposal network first generates a fixed number of region proposals, followed by a second-stage classifier that classifies them independently. The Faster R-CNN family~\cite{ren2015faster} is representative of this paradigm and performs well in terms of precision, but suffers from slower inference speed due to its serial nature.
+
+Alternatively, a single neural network can remove the explicit proposal stage and predict bounding boxes and class probabilities directly from the full image in a single forward pass through the network. The \gls{yolo} family, introduced by Redmon \textit{et~al.}~\cite{redmon2016yolo}, is the canonical example of this approach. This architecture performs multi-class regression on a predefined number of grid cells. While not as accurate as its two-stage counterparts, \gls{yolo} detectors achieve very high throughput, making them well suited to video analysis tasks.
+
+The \gls{yolo} architecture has been improved through a number of successive releases. Later iterations introduced multi-scale prediction heads, path aggregation feature pyramids, and anchor-free detection schemes, each incrementally improving the accuracy--speed trade-off. The present work uses YOLO11, the current release maintained by Ultralytics~\cite{ultralytics2024yolo11}, applied with the pretrained weights supplied by Ultralytics and trained on the COCO dataset. No fine-tuning on football-specific data is performed; the model is used for inference directly, exploiting the fact that its pretrained weights already include a \texttt{person} class suitable for player detection.
 
 \section{Projective Geometry and Homography}%
 \label{sec:bg_geometry}
 
-% TODO: planar projection assumption, the homography matrix \gls{H},
-% \gls{ransac}, reprojection error.
+When a camera images a planar surface, the relationship between coordinates on that plane and coordinates in the image is described by a projective transformation known as a homography~\cite{hartley2004multiple}. A football pitch satisfies the planarity assumption to a close approximation, making homography estimation the natural tool for mapping player positions from the broadcast image plane into a real-world metric coordinate system on the pitch.
+
+A homography is represented by a $3 \times 3$ matrix $\mathbf{H}$ that operates on points expressed in homogeneous coordinates. If the homogeneous coordinates of a point on the world plane are $\mathbf{X} = (X,\, Y,\, 1)^{\top}$, the coordinates of its corresponding image projection $\mathbf{x} = (u,\, v,\, 1)^{\top}$ satisfy
+
+\begin{equation}
+  \lambda\,\mathbf{x} = \mathbf{H}\,\mathbf{X},
+  \label{eq:homography}
+\end{equation}
+
+\noindent where $\lambda > 0$, $X$ and $Y$ are the real-world pitch coordinates in metres, and $u$ and $v$ are the corresponding horizontal and vertical pixel coordinates in the image. As $\mathbf{H}$ is defined only up to scale, it has eight degrees of freedom. Expanding Equation~\ref{eq:homography} and eliminating $\lambda$ yields, per correspondence $(X_i, Y_i) \leftrightarrow (u_i, v_i)$, the two linear equations
+\begin{align*}
+  X_i h_{11} + Y_i h_{12} + h_{13} - u_i(X_i h_{31} + Y_i h_{32} + h_{33}) &= 0, \\
+  X_i h_{21} + Y_i h_{22} + h_{23} - v_i(X_i h_{31} + Y_i h_{32} + h_{33}) &= 0,
+\end{align*}
+in the nine entries of $\mathbf{H}$, so four correspondences fully determine the system. In practice more than four are identified, yielding an overdetermined homogeneous system $\mathbf{A}\mathbf{h} = \mathbf{0}$ solved in the least-squares sense via the \gls{dlt} algorithm: the solution is the right singular vector of $\mathbf{A}$ corresponding to its smallest singular value, obtained by \gls{svd}~\cite{hartley2004multiple}.
+
+Landmark correspondences identified in a broadcast image are susceptible to localisation error, and a small number of gross outliers can corrupt the least-squares solution. \Gls{ransac}~\cite{fischler1981ransac} addresses this by repeatedly sampling the minimum set of correspondences needed to estimate a candidate $\mathbf{H}$, counting the remaining correspondences that are consistent with that candidate within a fixed reprojection-error threshold, and retaining the candidate with the largest inlier set. The final homography is then re-estimated from all inliers using the \gls{dlt} algorithm.
+
+Reprojection error is the measure of the quality of a calibrated homography. For each inlier correspondence, the known world coordinate $\mathbf{x}_i^w$ is projected into the image via $\mathbf{H}^{-1}$ and the Euclidean distance to the observed image position $\mathbf{x}_i$ is computed. The mean symmetric reprojection error over $n$ correspondences is
+
+\begin{equation}
+  \bar{\varepsilon} = \frac{1}{n} \sum_{i=1}^{n} \left\| \pi\!\left(\mathbf{H}^{-1},\, \mathbf{x}_i^w\right) - \mathbf{x}_i \right\|_2,
+  \label{eq:reproj}
+\end{equation}
+
+\noindent where $\pi(\mathbf{M}, \mathbf{p})$ denotes the perspective projection of point $\mathbf{p}$ by matrix $\mathbf{M}$. A lower $\bar{\varepsilon}$ indicates a more accurate calibration, and this metric is used in the evaluation presented in Chapter~\ref{chp:evaluation}.
 
 \section{Team Identification}%
 \label{sec:bg_team_id}
 
-% TODO: colour spaces (Lab vs.\ RGB / HSV), kit colour clustering approaches.
+The assignment of detected players to their respective teams is a prerequisite for evaluating the offside condition, since the relevant attacker and the second-to-last defender must belong to opposing sides. The most reliably visible discriminating feature between competing teams is the colour of their kits, which the Laws of the Game require to be distinct from one another and from the attire of the match officials.
+
+Colour in a digital image is most commonly represented in the \gls{rgb} colour space, where each pixel is described by red, green, and blue channel intensities. \gls{rgb} is convenient for display purposes but is perceptually non-uniform: equal Euclidean distances in \gls{rgb} space do not correspond to equal perceived colour differences, which limits its suitability for clustering by perceived colour. The \gls{hsv} colour model decomposes hue, saturation, and brightness into separate components and is more intuitive for colour segmentation, but distances within \gls{hsv} are also perceptually non-uniform. The CIE~L*a*b* colour space, referred to throughout this report as CIE Lab, is a perceptually uniform space in which the L* channel represents lightness and the a* and b* channels encode colour-opponent dimensions. Euclidean distances in CIE Lab correspond closely to perceived colour differences~\cite{gonzalez2018dip}, making it the preferred representation for colour-based clustering in computer vision applications.
+
+K-Means clustering is an iterative partitioning algorithm that divides a set of observations into $k$ clusters by minimising the within-cluster sum of squared Euclidean distances $J = \sum_{k=1}^{K} \sum_{\mathbf{x}_i \in \mathcal{C}_k} \|\mathbf{x}_i - \boldsymbol{\mu}_k\|^2$~\cite{macqueen1967kmeans}, where $\mathcal{C}_k$ is the $k$th cluster and $\boldsymbol{\mu}_k$ its centroid. Starting from an initial assignment of $k$ centroids, the algorithm alternates between assigning each observation to its nearest centroid and recomputing each centroid as the mean of its assigned observations. Iteration continues until the assignments no longer change. The algorithm requires the number of clusters $k$ to be specified in advance.
+
+In the present system, each detected player bounding box is cropped from the keyframe and the dominant colour of the upper body region of the crop is extracted and converted to CIE Lab. This colour observation is then submitted to K-Means clustering with $k = 2$, corresponding to the two competing teams. Players are labelled according to the cluster to which they are assigned. The approach requires no prior knowledge of the specific kit colours and is therefore applicable to arbitrary match footage without manual configuration, though it is sensitive to cases in which the two teams wear visually similar kits or where a player's kit is heavily occluded.
 
 \section{Literature Review}%
 \label{sec:lit_review}
 
-% TODO: state of the art in automated offside / event detection in football.
-% Critique each work --- where it succeeds, where it falls short, and why
-% it is relevant to this FYP.
+Automated offside detection has attracted very limited research attention in comparison to other football analytics tasks such as action spotting and player tracking. Despite this, a small number of works address similar aims and objectives. The following sections present a critical analysis of these systems and identify their relevance to the present work.
+
+\subsection{Muthuraman \textit{et~al.}\ (2018)}%
+\label{sec:lit_muthuraman}
+
+Muthuraman \textit{et~al.}~\cite{muthuraman2018vision} present one of the earliest attempts at dynamic offside line detection from video. They used the \gls{klt} optical flow tracker to follow and track players and teams were distinguished by colour blob detection, with a user interface allowing the operator to match the players with their respective teams. A dynamic offside line is drawn through the position of the last outfield defender on each frame, producing a visual overlay rather than a yes or no verdict. Notably, instead of using actual real life match broadcasts, they gathered the data exclusively from the FIFA~18 video game, used as a proxy for real broadcast footage.
+
+The main strength of this work is its early recognition that team identification is a necessary component of any complete offside detection system, and its framing of the problem as a real-time pipeline. However, the evaluation is limited to purely visual inspection: no quantitative metrics are reported at any stage of the pipeline. A further limitation is the reliance on computer-generated game-engine footage as a proxy for broadcast video. FIFA~18 renders simplified lighting, shadow, and texture conditions relative to a real broadcast feed, so it is unclear whether the reported behaviour would generalise to production footage subject to variable illumination, motion blur, and camera artefacts. The authors also explicitly rejected \gls{yolo}-based detection as insufficiently accurate at the time of writing, a position that has since been superseded by subsequent advances in single-stage detection.
+
+This work is relevant to the present final year project as an early demonstration of colour-based team identification and as evidence that a dynamic offside line is achievable from a single camera. Its reliance on synthetic data and the absence of quantitative evaluation are limitations that the present work directly addresses by operating on real SoccerNet broadcast footage and evaluating against ground-truth annotations.
+
+\subsection{Panse and Mahabaleshwarkar (2020)}%
+\label{sec:lit_panse}
+
+Panse and Mahabaleshwarkar~\cite{panse2020dataset} contribute both a dataset and a methodology for static-image offside detection. A collection of five hundred annotated broadcast images was assembled, each labelled with player positions and ground-truth offside verdicts. The offside line geometry was derived from the vanishing point of visible pitch markings, and player body keypoints were estimated using a pose estimation model. Crucially, only the specific body parts recognised by Law~11 were used for the offside measurement, making this one of the more legally precise approaches in the literature. The system achieved a \gls{fone} of 0.85 on its own annotated dataset.
+
+The quantified F1 score of 0.85 represents the first properly benchmarked result in this research area and constitutes a meaningful contribution. The use of body keypoints rather than whole-body bounding boxes improves geometric accuracy relative to blob-based methods. However, the system operates on static images rather than video, entirely sidestepping the problem of keyframe selection. Team identification is not automated: the roles of each player are provided as ground-truth annotations, meaning the method cannot be applied end-to-end without manual labelling. The dataset of five hundred images, while a useful contribution, is modest in scale, and evaluating a system on its own collected dataset limits the assessment of generalisation.
+
+The present work shares the broadcast single-camera setting and the geometric offside evaluation approach with Panse and Mahabaleshwarkar~\cite{panse2020dataset}. The key distinction is that team identification is performed automatically by kit colour clustering, and evaluation is conducted against independently produced SoccerNet annotations rather than a self-collected dataset, providing a stronger test of generalisation.
+
+\subsection{Uchida \textit{et~al.}\ (2021)}%
+\label{sec:lit_uchida}
+
+Uchida \textit{et~al.}~\cite{uchida2021offside} present the most complete end-to-end automated offside detection system found in the reviewed literature. Two fixed cameras are installed above the pitch at known positions, and Zhang's planar calibration method~\cite{zhang2000calibration} is used to obtain their intrinsic and extrinsic parameters. Players are detected using YOLO~v5 and tracked across frames using Simple Online and Realtime Tracking~(SORT). Once player positions are projected into a shared metric coordinate system, the offside condition is evaluated geometrically. The system is evaluated on twenty match clips and achieves an F1 score of 63.1\%.
+
+The provision of an end-to-end pipeline evaluated on real footage with quantitative results is the principal strength of this work. The use of a tracker enables evaluation at the verdict level across whole clips, which is methodologically more rigorous than frame-based evaluation on isolated images. However, the system has a structural limitation: it requires two dedicated cameras at known fixed positions. This restricts deployment to venues with pre-installed and calibrated camera infrastructure, which is not available outside the elite tier of the sport. The reported F1 score of 63.1\% also suggests that residual detection and tracking error remain significant even with dedicated cameras, indicating that the offside detection problem is not fully resolved by the addition of dedicated hardware alone.
+
+The present work avoids the dedicated-camera requirement by using a single broadcast video and estimating the homography from pitch landmarks visible in each keyframe. This introduces a per-event manual annotation step, which is acceptable in a retrospective analysis context such as performance review or coaching feedback. The modest F1 result reported by Uchida \textit{et~al.}~\cite{uchida2021offside} further motivates the use of a state-of-the-art detection model (YOLO11) in the present work in preference to an older variant.
+
+\subsection{Desai (2025)}%
+\label{sec:lit_desai}
+
+Desai~\cite{desai2025realtime} proposes a single-camera broadcast offside detection system whose motivation closely mirrors that of the present work. The playing area is segmented by masking the green field in HSV colour space, and the alternating light and dark green stripes of the pitch are exploited as a source of parallel lines. A Canny edge detector followed by a Hough transform was used to identify these stripes; \gls{ransac} was then applied to their pairwise intersections to estimate the vanishing point. From the vanishing point and player body keypoints detected using a KeypointRCNN ResNet50 model, perspective-correct lines were drawn through each player, and the rightmost such line is identified as the candidate offside line.
+
+The use of pitch stripe geometry as the primary source of perspective information is a creative approach that avoids the need for explicit landmark selection. However, no quantitative evaluation is reported; results are presented solely as visual overlays on frames from a single Premier League match. Team identification is not performed: the system relies on raw image-plane position to infer which player defines the offside line, which will produce incorrect results whenever an attacker is positioned deeper in the image than the last defender. Furthermore, the system does not produce a binary offside or onside verdict for any specific player. As published, it therefore does not constitute a complete offside detection pipeline, and the absence of any accuracy metric makes it impossible to assess its reliability.
+
+Of the four works reviewed, this paper is the most closely related to the present final year project in motivation and camera constraint. The present work diverges primarily in its geometric representation: rather than a vanishing point derived from pitch stripes, a full homography is estimated from manually identified pitch landmarks, allowing all player positions to be expressed as metric coordinates on the pitch plane. This yields absolute position measurements and directly supports a binary verdict with a quantified margin, both of which are absent from Desai's system.
+
+\subsection{Summary}%
+\label{sec:lit_summary}
+
+Across the reviewed works, two geometric approaches recur: vanishing-point estimation~\cite{muthuraman2018vision,panse2020dataset,desai2025realtime}, which operates in image space without a world coordinate system, and full metric projection via homography or camera calibration~\cite{uchida2021offside}, which yields absolute measurements but requires fixed hardware or an explicit calibration step. None of the single-camera systems report binary verdict accuracy against independent ground truth, and none combine automated team identification with geometric evaluation in the same pipeline.
+
+The present work is distinguished from the reviewed literature by combining automatic team identification via kit colour clustering in CIE Lab colour space, homography estimation to a metric pitch coordinate system, and end-to-end evaluation against independently labelled SoccerNet annotations across approximately fifty offside events. This combination constitutes a more complete broadcast-only pipeline than any of the individual works reviewed above, and provides the first quantified comparison against an established benchmark dataset in this setting.

@@ -5,50 +5,50 @@ import base64
 import http.server
 import threading
 import numpy as np
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 KEYFRAMES_DIR = "data/keyframes"
 OUTPUT_FILE = "data/homography_points.json"
-MIN_POINTS = 4
-
-# IMPROVEMENT 11: clicks are refined to subpixel accuracy via
-# cv2.cornerSubPix before being stored. This gives ~0.1-0.3 px precision on
-# pitch line intersections (corners, penalty box corners, halfway-line
-# crossings) where there's a strong gradient — invisible to the user but
-# tightens the homography fit. The refined point is stored as float instead
-# of integer, so downstream consumers (compute_homography, etc.) must accept
-# float pixel coordinates.
-SUBPIX_WIN = 7  # half-window in pixels — search region is (2*W+1)
-
+MIN_POINTS = 4   #mathematical minimum, minimum 4 points to solve homography, the more points the more accurate
+SUBPIX_WIN = 7   #search window size used when refining clicks to subpixel accuracy, 7x7 pixel neighbourhood around your click
 
 def refine_click(img_bgr, x, y, win=SUBPIX_WIN):
     """Refine a click to subpixel using cornerSubPix. Falls back to the
     original click if refinement fails or moves the point further than the
     search window (which would indicate a spurious convergence)."""
     try:
-        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        #converts greyscale since pixel refinement works on intensity gradients, no need to know about colour
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)  
         h, w = gray.shape
+        #if click is too close to image edge, 7x7 search window would fall outside image bounds and crash, return original click unchanged instead
         if x < win + 1 or y < win + 1 or x > w - win - 2 or y > h - win - 2:
             return float(x), float(y)
+        #cornerSubPix requires specific shape a 2D Array with one row per point
         pt = np.array([[float(x), float(y)]], dtype=np.float32)
+        #tells algorithm to stop after either 30 iterations or when point moves less than 0.01 pixels between iterations
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01)
+        #use cv2.cornerSubPix which looks at the image gradients in a 7x7 window around your click
+        #and mathematically finds the exact sub pixel location of strongest corner or edge
         cv2.cornerSubPix(gray, pt, (win, win), (-1, -1), criteria)
         rx, ry = float(pt[0][0]), float(pt[0][1])
+        #sanity check - if refined point jumped more than 7 pixels from click, it converged on the wrong feature entirely
+        #discard refinement and return your original click
         if abs(rx - x) > win or abs(ry - y) > win:
             return float(x), float(y)
         return rx, ry
     except Exception:
         return float(x), float(y)
 
-# Load existing points
+#load existing points
 if os.path.exists(OUTPUT_FILE):
     with open(OUTPUT_FILE) as f:
         all_points = json.load(f)
 else:
-    all_points = {}
+    all_points = {}  #dictionary keyed by keyframe filename, value list of point pairs 
 
-# Get all keyframes that need annotation (fewer than MIN_POINTS)
+# get all keyframes that need annotation (fewer than MIN_POINTS)
 ALL_KEYFRAMES = sorted([f for f in os.listdir(KEYFRAMES_DIR) if f.endswith(".jpg")])
+#keyframes with fewer than 4 points are added to pending, frames with more than 4 points are skipped
 PENDING = [kf for kf in ALL_KEYFRAMES
            if len(all_points.get(kf, [])) < MIN_POINTS]
 
@@ -60,10 +60,11 @@ if len(PENDING) == 0:
     print("All keyframes already have enough points!")
     exit(0)
 
+#state dictionary
 state = {
-    "index": 0,
-    "points": all_points.get(PENDING[0], []).copy(),
-    "done": False
+    "index": 0,                                         #which frame in pending youre currently on 
+    "points": all_points.get(PENDING[0], []).copy(),    #list of points collected so far for current frame
+    "done": False                                       #still working on the frame so not done
 }
 
 def load_image(kf_name):
@@ -71,18 +72,19 @@ def load_image(kf_name):
     img = cv2.imread(img_path)
     return img
 
-def frame_to_base64(img, points):
-    vis = img.copy()
-    for i, p in enumerate(points):
-        # Stored coords are now floats (subpixel-refined) — round for drawing.
-        px, py = int(round(p["image"][0])), int(round(p["image"][1]))
-        cv2.circle(vis, (px, py), 8, (0, 255, 255), -1)
-        cv2.circle(vis, (px, py), 9, (0, 0, 0), 2)
-        cv2.putText(vis, str(i + 1), (px + 12, py - 8),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-    _, buffer = cv2.imencode('.jpg', vis, [cv2.IMWRITE_JPEG_QUALITY, 88])
-    return base64.b64encode(buffer).decode('utf-8')
 
+def frame_to_base64(img, points):
+    vis = img.copy() #never draw onto original image- draw a copy so base image stays clean 
+    for i, p in enumerate(points):
+        px, py = int(round(p["image"][0])), int(round(p["image"][1]))
+        cv2.circle(vis, (px, py), 8, (0, 255, 255), -1) #filled yellow circle, radius 8 , thickness -1 means filled solid
+        cv2.circle(vis, (px, py), 9, (0, 0, 0), 2)      #black outline ring radius 9, to make dot more visible against backgrounds
+        cv2.putText(vis, str(i + 1), (px + 12, py - 8), #number label placed 12px to right and 8px above dot center to not overlap, start points from 1
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+    _, buffer = cv2.imencode('.jpg', vis, [cv2.IMWRITE_JPEG_QUALITY, 88]) #encodes jpeg at quality 88, higher than keyframe annotator
+    return base64.b64encode(buffer).decode('utf-8') #converts bytes to ASCII text so it can travel inside a JSON string, decode converts from bytes to a python string
+
+#updates all points with current frames points then writes the whole dict to disk
 def save_points():
     kf = PENDING[state["index"]]
     all_points[kf] = state["points"]
@@ -127,7 +129,6 @@ HTML = """
             font-size: 14px; line-height: 1.5;
             -webkit-font-smoothing: antialiased;
         }
-        .mono { font-family: 'JetBrains Mono', 'Roboto Mono', monospace; }
         .appbar {
             display: flex; align-items: center; gap: 20px;
             padding: 12px 24px;
@@ -195,12 +196,12 @@ HTML = """
             background: var(--surface);
             border: 1px solid var(--border-soft);
             border-radius: 12px;
-            padding: 16px 16px 14px;
+            padding: 14px 14px 12px;
         }
         .card h3 {
             font-size: 11px; font-weight: 600;
             color: var(--text-dim); text-transform: uppercase;
-            letter-spacing: 1px; margin-bottom: 12px;
+            letter-spacing: 1px; margin-bottom: 10px;
             display: flex; align-items: center; justify-content: space-between;
         }
         .card h3 .title-inner { display: flex; align-items: center; gap: 8px; }
@@ -210,31 +211,30 @@ HTML = """
         }
         .count-pill {
             font-size: 11px; font-weight: 600;
-            padding: 2px 9px;
-            border-radius: 12px;
-            background: var(--success-soft);
-            color: var(--success);
+            padding: 2px 9px; border-radius: 12px;
+            background: var(--success-soft); color: var(--success);
             border: 1px solid rgba(16, 185, 129, 0.25);
             font-family: 'JetBrains Mono', monospace;
             letter-spacing: 0; text-transform: none;
         }
         .count-pill.warn {
-            background: var(--warning-soft);
-            color: var(--warning);
+            background: var(--warning-soft); color: var(--warning);
             border-color: rgba(245, 158, 11, 0.3);
         }
+        /* Pixel display */
         .pixel-display {
             display: flex; align-items: center; gap: 10px;
-            padding: 10px 12px;
+            padding: 8px 10px;
             background: var(--surface-2);
             border: 1px solid var(--border);
             border-radius: 8px;
-            margin-bottom: 12px;
+            margin-bottom: 10px;
         }
         .pixel-display .dot {
             width: 10px; height: 10px; background: var(--warning);
             border-radius: 50%;
             box-shadow: 0 0 0 3px var(--warning-soft);
+            flex-shrink: 0;
         }
         .pixel-display .label {
             font-size: 10px; color: var(--text-muted);
@@ -242,49 +242,79 @@ HTML = """
         }
         .pixel-display .value {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 13px; color: var(--warning); margin-left: auto;
+            font-size: 12px; color: var(--warning); margin-left: auto;
         }
-        .pixel-display .value.empty { color: var(--text-muted); font-family: inherit; font-style: italic; }
-        label {
+        .pixel-display .value.empty { color: var(--text-muted); font-family: inherit; font-style: italic; font-size: 11px; }
+        /* Section label */
+        .section-label {
+            font-size: 10px; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600;
+            margin-bottom: 6px;
+        }
+        /* Pitch SVG */
+        .pitch-svg {
+            width: 100%; height: auto;
             display: block;
-            font-size: 10.5px; color: var(--text-muted);
-            text-transform: uppercase; letter-spacing: 0.7px; font-weight: 600;
-            margin-bottom: 4px; margin-top: 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border-soft);
+            overflow: visible;
         }
-        select, input[type="number"] {
+        .pitch-line { stroke: #3d6b4a; stroke-width: 0.45; fill: none; }
+        .lm {
+            fill: #f59e0b;
+            cursor: pointer;
+            transition: fill 0.12s;
+        }
+        .lm:hover { fill: #fde68a; }
+        .lm.picked { fill: #10b981; }
+        .pitch-hint {
+            font-size: 10.5px; color: var(--text-muted);
+            text-align: center;
+            padding: 5px 4px 8px;
+            font-family: 'JetBrains Mono', monospace;
+            min-height: 28px;
+            transition: color 0.1s;
+        }
+        .pitch-hint.active { color: var(--warning); }
+        /* Coord inputs */
+        .coord-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+        .coord-grid label {
+            display: block;
+            font-size: 10px; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.7px; font-weight: 600;
+            margin-bottom: 3px;
+        }
+        input[type="number"] {
             width: 100%;
             background: var(--surface-2);
             border: 1px solid var(--border);
             color: var(--text);
             font-family: 'JetBrains Mono', monospace;
-            font-size: 13px;
-            padding: 9px 10px;
+            font-size: 12px;
+            padding: 7px 8px;
             border-radius: 7px;
             transition: border-color 0.15s, box-shadow 0.15s;
         }
-        select { font-family: 'Inter', sans-serif; font-size: 13px; }
-        select:focus, input[type="number"]:focus {
+        input[type="number"]:focus {
             outline: none;
             border-color: var(--accent);
             box-shadow: 0 0 0 3px var(--accent-soft);
         }
-        optgroup { color: var(--accent); font-weight: 600; background: var(--surface); }
-        option { color: var(--text); background: var(--surface-2); }
-        .coord-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        /* Status */
         .status {
-            margin-top: 10px; padding: 7px 10px;
-            font-size: 11.5px;
-            color: var(--success);
-            background: var(--success-soft);
-            border: 1px solid rgba(16, 185, 129, 0.2);
+            padding: 6px 10px;
+            font-size: 11px;
             border-radius: 7px;
+            margin-bottom: 8px;
         }
-        .status.hint { color: var(--text-dim); background: var(--surface-2); border-color: var(--border); }
-        .status.warn { color: var(--warning); background: var(--warning-soft); border-color: rgba(245, 158, 11, 0.25); }
+        .status.hint { color: var(--text-dim); background: var(--surface-2); border: 1px solid var(--border); }
+        .status.ok   { color: var(--success); background: var(--success-soft); border: 1px solid rgba(16,185,129,0.2); }
+        .status.warn { color: var(--warning); background: var(--warning-soft); border: 1px solid rgba(245,158,11,0.25); }
+        /* Buttons */
         .btn {
             font-family: inherit;
             font-size: 13px; font-weight: 500;
-            padding: 9px 14px;
+            padding: 8px 14px;
             border: 1px solid transparent;
             border-radius: 8px;
             cursor: pointer;
@@ -292,64 +322,44 @@ HTML = """
             display: inline-flex; align-items: center; justify-content: center;
             gap: 6px; width: 100%;
         }
-        .btn + .btn { margin-top: 8px; }
+        .btn + .btn { margin-top: 7px; }
         .btn:disabled { opacity: 0.4; cursor: not-allowed; }
         .btn-primary { background: var(--accent); color: #fff; }
         .btn-primary:hover:not(:disabled) { background: #2563eb; }
         .btn-success { background: var(--success); color: #fff; }
         .btn-success:hover:not(:disabled) { background: #0ea368; }
-        .btn-ghost {
-            background: transparent;
-            border-color: var(--border);
-            color: var(--text-dim);
-        }
+        .btn-ghost { background: transparent; border-color: var(--border); color: var(--text-dim); }
         .btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
-        .btn-danger-ghost {
-            background: transparent;
-            border-color: rgba(239, 68, 68, 0.3);
-            color: var(--danger);
-        }
+        .btn-danger-ghost { background: transparent; border-color: rgba(239,68,68,0.3); color: var(--danger); }
         .btn-danger-ghost:hover:not(:disabled) { background: var(--danger-soft); }
+        .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .btn-row .btn { margin-top: 0; }
+        /* Points list */
         .point-list {
             display: flex; flex-direction: column; gap: 4px;
-            max-height: 240px; overflow-y: auto;
-            margin-bottom: 10px;
+            max-height: 200px; overflow-y: auto;
+            margin-bottom: 8px;
         }
-        .point-list::-webkit-scrollbar { width: 6px; }
-        .point-list::-webkit-scrollbar-track { background: transparent; }
+        .point-list::-webkit-scrollbar { width: 5px; }
         .point-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
         .point-item {
-            display: grid;
-            grid-template-columns: 22px 1fr;
-            align-items: center;
-            gap: 10px;
-            padding: 7px 10px;
+            display: grid; grid-template-columns: 22px 1fr;
+            align-items: center; gap: 8px;
+            padding: 6px 8px;
             background: var(--surface-2);
             border-radius: 7px;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
         }
         .point-item .idx {
             width: 22px; height: 22px;
-            background: var(--accent-soft);
-            color: var(--accent);
-            border-radius: 50%;
-            display: grid; place-items: center;
-            font-weight: 600; font-size: 10.5px;
+            background: var(--accent-soft); color: var(--accent);
+            border-radius: 50%; display: grid; place-items: center;
+            font-weight: 600; font-size: 10px;
         }
-        .point-item .coords { color: var(--text-dim); line-height: 1.35; }
-        .point-item .coords .px { color: var(--text-muted); font-size: 10px; }
+        .point-item .coords .px { color: var(--text-muted); font-size: 9.5px; }
         .point-item .coords .rw { color: var(--text); }
-        .empty-state {
-            padding: 18px 10px; text-align: center;
-            font-size: 11.5px; color: var(--text-muted);
-        }
-        .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        .btn-row .btn { margin-top: 0; }
-        .min-hint {
-            margin-top: 6px; font-size: 10.5px;
-            color: var(--text-muted); text-align: center;
-        }
+        .empty-state { padding: 14px; text-align: center; font-size: 11.5px; color: var(--text-muted); }
+        .min-hint { margin-top: 4px; font-size: 10.5px; color: var(--text-muted); text-align: center; }
         .min-hint .good { color: var(--success); }
         .min-hint .warn { color: var(--warning); }
     </style>
@@ -372,7 +382,7 @@ HTML = """
                 <div class="progress-fill" id="progress-fill"></div>
             </div>
         </div>
-        <div class="clip-chip mono" id="clip-name">&mdash;</div>
+        <div class="clip-chip" style="font-family:'JetBrains Mono',monospace" id="clip-name">&mdash;</div>
     </div>
 
     <div class="layout">
@@ -385,89 +395,118 @@ HTML = """
                         <span class="mono-val" id="cursor-coords">&mdash;</span>
                     </div>
                     <div class="tool-chip">
-                        <span class="label">Mode</span>
-                        <span style="color: var(--accent);">Click to pick</span>
+                        <span style="color: var(--accent); font-size:11px;">Click to pick</span>
                     </div>
                 </div>
             </div>
         </div>
 
         <aside class="sidebar">
+            <!-- Selection card -->
             <div class="card">
-                <h3><span class="title-inner">Selected pixel</span></h3>
+                <h3><span class="title-inner">Point selection</span></h3>
+
                 <div class="pixel-display">
                     <div class="dot"></div>
                     <span class="label">Pixel</span>
-                    <span class="value empty" id="pixel-coords">Click on the image</span>
+                    <span class="value empty" id="pixel-coords">Click on the frame</span>
                 </div>
 
-                <label>Landmark preset</label>
-                <select id="landmark-preset" onchange="applyLandmark()">
-                    <option value="">&mdash; Custom (type coords below) &mdash;</option>
-                    <optgroup label="Centre / Halfway">
-                        <option value="0,0">Centre spot (0, 0)</option>
-                        <option value="0,34">Halfway, near touchline (0, 34)</option>
-                        <option value="0,-34">Halfway, far touchline (0, -34)</option>
-                    </optgroup>
-                    <optgroup label="Right penalty box">
-                        <option value="36,20.16">Midfield edge, near side (36, 20.16)</option>
-                        <option value="36,-20.16">Midfield edge, far side (36, -20.16)</option>
-                        <option value="52.5,20.16">Goal line, near side (52.5, 20.16)</option>
-                        <option value="52.5,-20.16">Goal line, far side (52.5, -20.16)</option>
-                    </optgroup>
-                    <optgroup label="Left penalty box">
-                        <option value="-36,20.16">Midfield edge, near side (-36, 20.16)</option>
-                        <option value="-36,-20.16">Midfield edge, far side (-36, -20.16)</option>
-                        <option value="-52.5,20.16">Goal line, near side (-52.5, 20.16)</option>
-                        <option value="-52.5,-20.16">Goal line, far side (-52.5, -20.16)</option>
-                    </optgroup>
-                    <optgroup label="Right 6-yard box">
-                        <option value="47,9.16">Midfield edge, near side (47, 9.16)</option>
-                        <option value="47,-9.16">Midfield edge, far side (47, -9.16)</option>
-                    </optgroup>
-                    <optgroup label="Left 6-yard box">
-                        <option value="-47,9.16">Midfield edge, near side (-47, 9.16)</option>
-                        <option value="-47,-9.16">Midfield edge, far side (-47, -9.16)</option>
-                    </optgroup>
-                    <optgroup label="Penalty spots">
-                        <option value="41.5,0">Right penalty spot (41.5, 0)</option>
-                        <option value="-41.5,0">Left penalty spot (-41.5, 0)</option>
-                    </optgroup>
-                    <optgroup label="Right goal posts">
-                        <option value="52.5,3.66">Near post (52.5, 3.66)</option>
-                        <option value="52.5,-3.66">Far post (52.5, -3.66)</option>
-                    </optgroup>
-                    <optgroup label="Left goal posts">
-                        <option value="-52.5,3.66">Near post (-52.5, 3.66)</option>
-                        <option value="-52.5,-3.66">Far post (-52.5, -3.66)</option>
-                    </optgroup>
-                    <optgroup label="Pitch corners">
-                        <option value="52.5,34">Near-right corner (52.5, 34)</option>
-                        <option value="52.5,-34">Far-right corner (52.5, -34)</option>
-                        <option value="-52.5,34">Near-left corner (-52.5, 34)</option>
-                        <option value="-52.5,-34">Far-left corner (-52.5, -34)</option>
-                    </optgroup>
-                </select>
+                <div class="section-label">Select landmark on pitch</div>
 
-                <div class="coord-grid" style="margin-top: 4px;">
+                <!-- Interactive SVG pitch -->
+                <svg class="pitch-svg" id="pitch-svg" viewBox="-57 -37 114 74" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Pitch background -->
+                    <rect x="-52.5" y="-34" width="105" height="68" fill="#0c1f13"/>
+                    <!-- Pitch outline -->
+                    <rect class="pitch-line" x="-52.5" y="-34" width="105" height="68"/>
+                    <!-- Halfway line -->
+                    <line class="pitch-line" x1="0" y1="-34" x2="0" y2="34"/>
+                    <!-- Centre circle & spot -->
+                    <circle class="pitch-line" cx="0" cy="0" r="9.15"/>
+                    <circle cx="0" cy="0" r="0.55" fill="#3d6b4a"/>
+                    <!-- Right penalty box -->
+                    <rect class="pitch-line" x="36" y="-20.16" width="16.5" height="40.32"/>
+                    <!-- Right 6-yard box -->
+                    <rect class="pitch-line" x="47" y="-9.16" width="5.5" height="18.32"/>
+                    <!-- Right penalty arc -->
+                    <path class="pitch-line" d="M 36,-7.313 A 9.15,9.15 0 0 0 36,7.313"/>
+                    <!-- Right penalty spot -->
+                    <circle cx="41.5" cy="0" r="0.45" fill="#3d6b4a"/>
+                    <!-- Right goal -->
+                    <rect class="pitch-line" x="52.5" y="-3.66" width="2.2" height="7.32" stroke-dasharray="0"/>
+                    <!-- Left penalty box -->
+                    <rect class="pitch-line" x="-52.5" y="-20.16" width="16.5" height="40.32"/>
+                    <!-- Left 6-yard box -->
+                    <rect class="pitch-line" x="-52.5" y="-9.16" width="5.5" height="18.32"/>
+                    <!-- Left penalty arc -->
+                    <path class="pitch-line" d="M -36,-7.313 A 9.15,9.15 0 0 1 -36,7.313"/>
+                    <!-- Left penalty spot -->
+                    <circle cx="-41.5" cy="0" r="0.45" fill="#3d6b4a"/>
+                    <!-- Left goal -->
+                    <rect class="pitch-line" x="-54.7" y="-3.66" width="2.2" height="7.32"/>
+                    <!-- "Near" label (bottom = camera side = +Y) -->
+                    <text x="0" y="37" text-anchor="middle" fill="#3d6b4a" font-size="2.6" font-family="Inter,sans-serif">near (camera side)</text>
+
+                    <!-- Landmark dots — Centre / Halfway -->
+                    <circle class="lm" cx="0"    cy="0"     r="1.4" data-x="0"     data-y="0"      data-name="Centre spot"/>
+                    <circle class="lm" cx="0"    cy="34"    r="1.4" data-x="0"     data-y="34"     data-name="Halfway · near touchline"/>
+                    <circle class="lm" cx="0"    cy="-34"   r="1.4" data-x="0"     data-y="-34"    data-name="Halfway · far touchline"/>
+                    <!-- Right penalty box -->
+                    <circle class="lm" cx="36"   cy="20.16" r="1.4" data-x="36"    data-y="20.16"  data-name="R pen. box · near midfield edge"/>
+                    <circle class="lm" cx="36"   cy="-20.16"r="1.4" data-x="36"    data-y="-20.16" data-name="R pen. box · far midfield edge"/>
+                    <circle class="lm" cx="52.5" cy="20.16" r="1.4" data-x="52.5"  data-y="20.16"  data-name="R pen. box · near goal line"/>
+                    <circle class="lm" cx="52.5" cy="-20.16"r="1.4" data-x="52.5"  data-y="-20.16" data-name="R pen. box · far goal line"/>
+                    <!-- Left penalty box -->
+                    <circle class="lm" cx="-36"  cy="20.16" r="1.4" data-x="-36"   data-y="20.16"  data-name="L pen. box · near midfield edge"/>
+                    <circle class="lm" cx="-36"  cy="-20.16"r="1.4" data-x="-36"   data-y="-20.16" data-name="L pen. box · far midfield edge"/>
+                    <circle class="lm" cx="-52.5"cy="20.16" r="1.4" data-x="-52.5" data-y="20.16"  data-name="L pen. box · near goal line"/>
+                    <circle class="lm" cx="-52.5"cy="-20.16"r="1.4" data-x="-52.5" data-y="-20.16" data-name="L pen. box · far goal line"/>
+                    <!-- Right 6-yard box -->
+                    <circle class="lm" cx="47"   cy="9.16"  r="1.4" data-x="47"    data-y="9.16"   data-name="R 6-yard · near edge"/>
+                    <circle class="lm" cx="47"   cy="-9.16" r="1.4" data-x="47"    data-y="-9.16"  data-name="R 6-yard · far edge"/>
+                    <!-- Left 6-yard box -->
+                    <circle class="lm" cx="-47"  cy="9.16"  r="1.4" data-x="-47"   data-y="9.16"   data-name="L 6-yard · near edge"/>
+                    <circle class="lm" cx="-47"  cy="-9.16" r="1.4" data-x="-47"   data-y="-9.16"  data-name="L 6-yard · far edge"/>
+                    <!-- Penalty spots -->
+                    <circle class="lm" cx="41.5" cy="0"     r="1.4" data-x="41.5"  data-y="0"      data-name="Right penalty spot"/>
+                    <circle class="lm" cx="-41.5"cy="0"     r="1.4" data-x="-41.5" data-y="0"      data-name="Left penalty spot"/>
+                    <!-- Goal posts — right -->
+                    <circle class="lm" cx="52.5" cy="3.66"  r="1.4" data-x="52.5"  data-y="3.66"   data-name="Right near post (52.5, 3.66)"/>
+                    <circle class="lm" cx="52.5" cy="-3.66" r="1.4" data-x="52.5"  data-y="-3.66"  data-name="Right far post (52.5, -3.66)"/>
+                    <!-- Goal posts — left -->
+                    <circle class="lm" cx="-52.5"cy="3.66"  r="1.4" data-x="-52.5" data-y="3.66"   data-name="Left near post (-52.5, 3.66)"/>
+                    <circle class="lm" cx="-52.5"cy="-3.66" r="1.4" data-x="-52.5" data-y="-3.66"  data-name="Left far post (-52.5, -3.66)"/>
+                    <!-- Pitch corners -->
+                    <circle class="lm" cx="52.5" cy="34"    r="1.4" data-x="52.5"  data-y="34"     data-name="Near-right corner"/>
+                    <circle class="lm" cx="52.5" cy="-34"   r="1.4" data-x="52.5"  data-y="-34"    data-name="Far-right corner"/>
+                    <circle class="lm" cx="-52.5"cy="34"    r="1.4" data-x="-52.5" data-y="34"     data-name="Near-left corner"/>
+                    <circle class="lm" cx="-52.5"cy="-34"   r="1.4" data-x="-52.5" data-y="-34"    data-name="Far-left corner"/>
+                </svg>
+
+                <div class="pitch-hint" id="pitch-hint">Hover a landmark</div>
+
+                <div class="section-label" style="margin-top:2px;">Real-world coords</div>
+                <div class="coord-grid">
                     <div>
-                        <label>Real X (m)</label>
-                        <input type="number" id="real-x" step="0.01" placeholder="auto-filled">
+                        <label>X (m)</label>
+                        <input type="number" id="real-x" step="0.01" placeholder="auto">
                     </div>
                     <div>
-                        <label>Real Y (m)</label>
-                        <input type="number" id="real-y" step="0.01" placeholder="auto-filled">
+                        <label>Y (m)</label>
+                        <input type="number" id="real-y" step="0.01" placeholder="auto">
                     </div>
                 </div>
 
-                <div class="status hint" id="status">Click image &rarr; pick landmark &rarr; Add</div>
+                <div class="status hint" id="status">Click the frame, then click a landmark</div>
 
-                <div class="btn-row" style="margin-top: 12px;">
+                <div class="btn-row">
                     <button class="btn btn-success" onclick="addPoint()">Add point</button>
                     <button class="btn btn-danger-ghost" onclick="deleteLastPoint()">Remove last</button>
                 </div>
             </div>
 
+            <!-- Points list card -->
             <div class="card">
                 <h3>
                     <span class="title-inner">Points</span>
@@ -480,7 +519,7 @@ HTML = """
 
                 <div class="min-hint" id="min-hint"><span class="warn">Need at least 4 points</span></div>
 
-                <div class="btn-row" style="margin-top: 12px;">
+                <div class="btn-row" style="margin-top: 10px;">
                     <button class="btn btn-primary" onclick="nextFrame()">Save &amp; next &rarr;</button>
                     <button class="btn btn-ghost" onclick="skipFrame()">Skip frame</button>
                 </div>
@@ -529,7 +568,7 @@ HTML = """
                       '<span class="idx">' + (i + 1) + '</span>' +
                       '<div class="coords">' +
                         '<div class="rw">(' + p.real[0] + ', ' + p.real[1] + ') m</div>' +
-                        '<div class="px">px (' + Number(p.image[0]).toFixed(1) + ', ' + Number(p.image[1]).toFixed(1) + ')</div>' +
+                        '<div class="px">px (' + Math.round(p.image[0]) + ', ' + Math.round(p.image[1]) + ')</div>' +
                       '</div>' +
                     '</div>'
                 ).join('');
@@ -537,84 +576,116 @@ HTML = """
 
             const hint = document.getElementById('min-hint');
             if (count >= 4) {
-                hint.innerHTML = '<span class="good">&check; Minimum met</span> &middot; add more for accuracy';
+                hint.innerHTML = '<span class="good">&#10003; Minimum met</span> &middot; add more for accuracy';
             } else {
-                hint.innerHTML = '<span class="warn">Need at least ' + (4 - count) + ' more point' + (4 - count === 1 ? '' : 's') + '</span>';
+                const n = 4 - count;
+                hint.innerHTML = '<span class="warn">Need ' + n + ' more point' + (n > 1 ? 's' : '') + '</span>';
             }
         }
 
+        /* Frame canvas: track cursor and pick pixel */
         canvas.addEventListener('mousemove', function(e) {
             const rect = canvas.getBoundingClientRect();
-            const scaleX = imgWidth / rect.width;
-            const scaleY = imgHeight / rect.height;
-            const x = Math.round((e.clientX - rect.left) * scaleX);
-            const y = Math.round((e.clientY - rect.top) * scaleY);
+            const x = Math.round((e.clientX - rect.left) * (imgWidth / rect.width));
+            const y = Math.round((e.clientY - rect.top) * (imgHeight / rect.height));
             document.getElementById('cursor-coords').textContent = '(' + x + ', ' + y + ')';
         });
 
         canvas.addEventListener('mouseleave', function() {
-            document.getElementById('cursor-coords').textContent = '—';
+            document.getElementById('cursor-coords').textContent = '&mdash;';
         });
 
         canvas.addEventListener('click', function(e) {
             const rect = canvas.getBoundingClientRect();
-            const scaleX = imgWidth / rect.width;
-            const scaleY = imgHeight / rect.height;
-            const x = Math.round((e.clientX - rect.left) * scaleX);
-            const y = Math.round((e.clientY - rect.top) * scaleY);
+            const x = Math.round((e.clientX - rect.left) * (imgWidth / rect.width));
+            const y = Math.round((e.clientY - rect.top) * (imgHeight / rect.height));
             selectedPixel = [x, y];
             const pd = document.getElementById('pixel-coords');
             pd.textContent = '(' + x + ', ' + y + ')';
             pd.className = 'value';
-            setStatus('Now enter real-world coordinates', 'hint');
+            setStatus('Now click a landmark on the pitch', 'hint');
+        });
+
+        /* Pitch SVG landmark interaction */
+        let activeLm = null;
+
+        document.querySelectorAll('.lm').forEach(function(el) {
+            el.addEventListener('mouseenter', function() {
+                el.setAttribute('r', '2.0');
+                const hint = document.getElementById('pitch-hint');
+                hint.textContent = el.dataset.name + '  (' + el.dataset.x + ', ' + el.dataset.y + ')';
+                hint.className = 'pitch-hint active';
+            });
+
+            el.addEventListener('mouseleave', function() {
+                el.setAttribute('r', el === activeLm ? '1.8' : '1.4');
+                const hint = document.getElementById('pitch-hint');
+                hint.textContent = 'Hover a landmark';
+                hint.className = 'pitch-hint';
+            });
+
+            el.addEventListener('click', function() {
+                const rx = parseFloat(el.dataset.x);
+                const ry = parseFloat(el.dataset.y);
+                document.getElementById('real-x').value = rx;
+                document.getElementById('real-y').value = ry;
+
+                /* Visual: mark this one as active */
+                if (activeLm) {
+                    activeLm.classList.remove('picked');
+                    activeLm.setAttribute('r', '1.4');
+                }
+                activeLm = el;
+                el.classList.add('picked');
+                el.setAttribute('r', '1.8');
+
+                /* Auto-add if pixel is already selected */
+                if (selectedPixel) {
+                    addPoint();
+                } else {
+                    setStatus('Click on the frame first', 'warn');
+                }
+            });
         });
 
         function setStatus(msg, kind) {
             const s = document.getElementById('status');
             s.textContent = msg;
-            s.className = 'status' + (kind ? ' ' + kind : '');
-        }
-
-        function applyLandmark() {
-            const sel = document.getElementById('landmark-preset');
-            if (!sel.value) return;
-            const parts = sel.value.split(',');
-            document.getElementById('real-x').value = parseFloat(parts[0]);
-            document.getElementById('real-y').value = parseFloat(parts[1]);
-            setStatus(selectedPixel ? 'Ready — click Add point' : 'Now click that landmark on the image', 'hint');
+            s.className = 'status ' + (kind || 'hint');
         }
 
         function addPoint() {
-            if (!selectedPixel) { setStatus('Click on the image first', 'warn'); return; }
+            if (!selectedPixel) { setStatus('Click on the frame first', 'warn'); return; }
             const rx = parseFloat(document.getElementById('real-x').value);
             const ry = parseFloat(document.getElementById('real-y').value);
-            if (isNaN(rx) || isNaN(ry)) { setStatus('Pick a landmark or enter coords', 'warn'); return; }
+            if (isNaN(rx) || isNaN(ry)) { setStatus('Select a landmark or enter coords', 'warn'); return; }
+
             fetch('/add_point', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({image: selectedPixel, real: [rx, ry]})
-            })
-            .then(r => r.json()).then(data => {
+            }).then(r => r.json()).then(data => {
                 updateUI(data);
                 loadImage();
+                /* Reset for next point */
                 selectedPixel = null;
                 const pd = document.getElementById('pixel-coords');
-                pd.textContent = 'Click on the image';
+                pd.textContent = 'Click on the frame';
                 pd.className = 'value empty';
                 document.getElementById('real-x').value = '';
                 document.getElementById('real-y').value = '';
-                document.getElementById('landmark-preset').value = '';
-                if (data.points.length >= 4) {
-                    setStatus('Good — ' + data.points.length + ' points. Add more or click Save & next.', '');
-                } else {
-                    setStatus(data.points.length + ' point(s) — need at least 4', 'warn');
-                }
+                if (activeLm) { activeLm.classList.remove('picked'); activeLm.setAttribute('r', '1.4'); activeLm = null; }
+                document.getElementById('pitch-hint').textContent = 'Hover a landmark';
+                document.getElementById('pitch-hint').className = 'pitch-hint';
+                const n = data.points.length;
+                setStatus('Point ' + n + ' added. Click next pixel on frame.', 'ok');
             });
         }
 
         function deleteLastPoint() {
-            fetch('/delete_point', {method: 'POST'})
-                .then(r => r.json()).then(data => { updateUI(data); loadImage(); });
+            fetch('/delete_point', {method: 'POST'}).then(r => r.json()).then(data => {
+                updateUI(data); loadImage();
+            });
         }
 
         function showDone(title, color, sub) {
@@ -632,13 +703,17 @@ HTML = """
                     showDone('All frames annotated', '#10b981', 'Points saved to data/homography_points.json');
                 } else {
                     selectedPixel = null;
-                    const pd = document.getElementById('pixel-coords');
-                    pd.textContent = 'Click on the image';
-                    pd.className = 'value empty';
+                    activeLm = null;
+                    document.getElementById('pixel-coords').textContent = 'Click on the frame';
+                    document.getElementById('pixel-coords').className = 'value empty';
                     document.getElementById('real-x').value = '';
                     document.getElementById('real-y').value = '';
-                    document.getElementById('landmark-preset').value = '';
-                    setStatus('Click image → pick landmark → Add', 'hint');
+                    document.getElementById('pitch-hint').textContent = 'Hover a landmark';
+                    document.getElementById('pitch-hint').className = 'pitch-hint';
+                    document.querySelectorAll('.lm.picked').forEach(function(e) {
+                        e.classList.remove('picked'); e.setAttribute('r', '1.4');
+                    });
+                    setStatus('Click the frame, then click a landmark', 'hint');
                     loadImage();
                 }
             });
@@ -649,7 +724,7 @@ HTML = """
                 if (data.done) {
                     showDone('All frames processed', '#f59e0b', 'Points saved to data/homography_points.json');
                 } else {
-                    selectedPixel = null;
+                    selectedPixel = null; activeLm = null;
                     loadImage();
                 }
             });
@@ -679,8 +754,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             h, w = img.shape[:2]
             response = {
                 "frame": frame_to_base64(img, state["points"]),
-                "width": w,
-                "height": h,
+                "width": w, "height": h,
                 "points": state["points"],
                 "clip_name": kf,
                 "clip_index": state["index"] + 1,
@@ -713,7 +787,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if parsed.path == '/add_point':
             data = json.loads(body)
             kf = PENDING[state["index"]]
-            # IMPROVEMENT 11: refine the user's integer click to subpixel.
             x_in, y_in = data["image"][0], data["image"][1]
             img = load_image(kf)
             x_ref, y_ref = refine_click(img, x_in, y_in)
@@ -753,7 +826,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             respond({"done": done})
 
         elif parsed.path == '/skip':
-            print(f"  Skipped {PENDING[state['index']]}")
+            kf = PENDING[state["index"]]
+            img_path = os.path.join(KEYFRAMES_DIR, kf)
+            if os.path.exists(img_path):
+                os.remove(img_path)
+            all_points.pop(kf, None)
+            with open(OUTPUT_FILE, "w") as f:
+                json.dump(all_points, f, indent=2)
+            print(f"  Skipped and removed {kf}")
             done = advance()
             respond({"done": done})
 
@@ -762,9 +842,11 @@ print(f"\nStarting point picker at http://localhost:{PORT}")
 print("Open that URL in your Windows browser")
 print(f"Frames to annotate: {len(PENDING)}\n")
 
+#server startup, binds all network interfaces
 server = http.server.HTTPServer(('0.0.0.0', PORT), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 
+#spin main thread until all frames are done or ctrl + c 
 try:
     while not state["done"]:
         pass
