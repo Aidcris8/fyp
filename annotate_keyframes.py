@@ -1,3 +1,7 @@
+# Browser-based UI for manually selecting the keyframe (ball-played moment) from
+# each offside clip. Serves on port 5000 — open http://localhost:5000 in your
+# browser after running. Saves annotated frame numbers to data/keyframes.json
+
 import cv2
 import json
 import os
@@ -13,7 +17,7 @@ OUTPUT_FILE = "data/keyframes.json"
 ALL_CLIPS = sorted([f for f in os.listdir(CLIPS_DIR) if f.endswith(".mp4")])
 print(f"Found {len(ALL_CLIPS)} total clips in {CLIPS_DIR}")
 
-# load existing clips
+# load existing annotations if a previous session exists
 if os.path.exists(OUTPUT_FILE):
     with open(OUTPUT_FILE) as f:
         data = json.load(f)
@@ -30,13 +34,11 @@ else:
     annotations = {}
     skipped = set()
 
-# keyframes.json evolves, old format was simply clip name.mp4: 247, new format wraps that in a keyframe key and adds a skipped list
+# only include clips not yet annotated or skipped so each session resumes exactly where it left off
 VERIFIED_CLIPS = [c for c in ALL_CLIPS if c not in annotations and c not in skipped]
 print(f"Already annotated: {len(annotations)}")
 print(f"Already skipped: {len(skipped)}")
 print(f"Remaining to annotate: {len(VERIFIED_CLIPS)}")
-
-#only clips you have not touched yet are annotated, re running always resumes exactly where you left off 
 
 #if the length of clips not yet annotated is 0, it means you have annotated every clip
 if len(VERIFIED_CLIPS) == 0:
@@ -53,7 +55,7 @@ state = {
 }
 
 #read entire clip into RAM as a list of NumPy arrays
-#resize frames to 960x540, deliberate downscale, raking less memory
+#resize frames to 960x540, deliberate downscale, taking less memory
 def load_clip(clip_name):
     print(f"Loading {clip_name}...")
     cap = cv2.VideoCapture(os.path.join(CLIPS_DIR, clip_name))
@@ -69,6 +71,7 @@ def load_clip(clip_name):
     print(f"  Loaded {len(frames)} frames at {fps}fps")
     return frames, fps
 
+# write both annotations and skipped set to disk 
 def save():
     with open(OUTPUT_FILE, "w") as f:
         json.dump({"keyframes": annotations, "skipped": list(skipped)}, f, indent=2)
@@ -95,6 +98,7 @@ def load_next_valid_clip():
         state["clip_index"] += 1
     return False
 
+# load first clip on startup, exit if nothing is readable
 if not load_next_valid_clip():
     print("No readable clips found. Exiting.")
     exit(0)
@@ -109,67 +113,10 @@ HTML = """
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/ui.css">
     <style>
-        :root {
-            --bg: #0a0b10;
-            --bg-elev: #12141c;
-            --surface: #171a24;
-            --surface-2: #1e2230;
-            --border: #262b3d;
-            --border-soft: #1e2230;
-            --text: #e6e8ee;
-            --text-dim: #9aa0b0;
-            --text-muted: #6b7085;
-            --accent: #3b82f6;
-            --accent-soft: rgba(59, 130, 246, 0.12);
-            --success: #10b981;
-            --success-soft: rgba(16, 185, 129, 0.12);
-            --danger: #ef4444;
-            --danger-soft: rgba(239, 68, 68, 0.12);
-            --warning: #f59e0b;
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body {
-            min-height: 100%;
-            background: var(--bg);
-            color: var(--text);
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            font-size: 14px;
-            line-height: 1.5;
-            -webkit-font-smoothing: antialiased;
-        }
-        .mono { font-family: 'JetBrains Mono', 'Roboto Mono', monospace; }
-        .appbar {
-            display: flex; align-items: center; gap: 20px;
-            padding: 12px 24px;
-            background: var(--bg-elev);
-            border-bottom: 1px solid var(--border);
-        }
-        .brand { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-        .brand-mark {
-            width: 30px; height: 30px; border-radius: 9px;
-            background: linear-gradient(135deg, #3b82f6, #10b981);
-            display: grid; place-items: center;
-            font-weight: 700; color: #fff; font-size: 15px;
-        }
-        .brand-text h1 { font-size: 14px; font-weight: 600; letter-spacing: -0.1px; }
-        .brand-text p { font-size: 10.5px; color: var(--text-muted); letter-spacing: 0.3px; }
-        .progress-bar { flex: 1; max-width: 520px; margin-left: 12px; }
-        .progress-meta { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 11px; }
-        .progress-meta .label { color: var(--text-dim); }
-        .progress-meta .count { color: var(--accent); font-weight: 600; }
-        .progress-track { height: 4px; background: var(--surface); border-radius: 2px; overflow: hidden; }
-        .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #3b82f6, #10b981); border-radius: 2px; transition: width 0.3s ease; }
-        .clip-chip {
-            margin-left: auto;
-            font-size: 10.5px; color: var(--text-muted);
-            padding: 5px 10px;
-            background: var(--surface);
-            border: 1px solid var(--border-soft);
-            border-radius: 6px;
-            max-width: 360px;
-            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        }
+        /* UI-specific styles for the keyframe annotator. Palette, fonts and
+           top-bar live in /static/ui.css. */
         .container { max-width: 1280px; margin: 0 auto; padding: 14px 20px 24px; }
         .timeline {
             background: var(--surface);
@@ -540,10 +487,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-   
     def do_GET(self):
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
+
+        # shared tail logic for /mark and /skip, advance to next clip and send done flag
+        def advance_clip(handler):
+            #shared tail logic for /mark and /skip — advances to next clip and sends done flag
+            state["clip_index"] += 1
+            has_more = load_next_valid_clip()
+            state["done"] = not has_more
+            state["frame_index"] = 0
+            handler.send_response(200)
+            handler.send_header('Content-type', 'application/json')
+            handler.end_headers()
+            handler.wfile.write(json.dumps({"done": not has_more}).encode())
 
         #returns HTML page
         if parsed.path == '/':
@@ -551,6 +509,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(HTML.encode())
+
+        #serves the shared stylesheet — hardcoded path, not derived from the URL,
+        #so this cannot be used to read arbitrary files from the project tree.
+        elif parsed.path == '/static/ui.css':
+            try:
+                with open('static/ui.css', 'rb') as f:
+                    css_bytes = f.read()
+                self.send_response(200)
+                self.send_header('Content-type', 'text/css; charset=utf-8')
+                self.send_header('Content-length', str(len(css_bytes)))
+                self.end_headers()
+                self.wfile.write(css_bytes)
+            except FileNotFoundError:
+                self.send_response(404)
+                self.end_headers()
 
         #reads idx, clamps it to valid range, encodes fram and returns the response
         elif parsed.path == '/frame':
@@ -587,30 +560,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             annotations[clip_name] = idx
             save()
             print(f"  Marked {clip_name} → frame {idx} ({round(idx/state['fps'], 2)}s)")
+            advance_clip(self)
 
-            state["clip_index"] += 1
-            has_more = load_next_valid_clip()
-            state["done"] = not has_more
-            state["frame_index"] = 0
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"done": not has_more}).encode())
-
-        #same thing but adds to skipped set
+        #adds to skipped set then advances to next clip
         elif parsed.path == '/skip':
             clip_name = VERIFIED_CLIPS[state["clip_index"]]
             skipped.add(clip_name)
             save()
             print(f"  Skipped {clip_name}")
-            state["clip_index"] += 1
-            has_more = load_next_valid_clip()
-            state["done"] = not has_more
-            state["frame_index"] = 0
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"done": not has_more}).encode())
+            advance_clip(self)
 
 PORT = 5000
 print(f"\nStarting annotator at http://localhost:{PORT}")
@@ -629,4 +587,4 @@ try:
 except KeyboardInterrupt:
     pass
 
-print("\n Annotations saved to", OUTPUT_FILE)
+print("\nAnnotations saved to", OUTPUT_FILE)

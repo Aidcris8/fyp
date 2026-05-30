@@ -1,0 +1,80 @@
+/* ============================================================
+   FYP shared UI styles
+   Loaded by annotate_keyframes.py, pick_points.py, and
+   offside_checker.py via <link rel="stylesheet" href="/static/ui.css">.
+   Covers: colour palette, base typography, and the top app bar.
+   UI-specific layout (cards, canvas, sidebars, verdicts) stays
+   inline in each script.
+   ============================================================ */
+
+:root {
+    --bg: #0a0b10;
+    --bg-elev: #12141c;
+    --surface: #171a24;
+    --surface-2: #1e2230;
+    --border: #262b3d;
+    --border-soft: #1e2230;
+    --text: #e6e8ee;
+    --text-dim: #9aa0b0;
+    --text-muted: #6b7085;
+    --accent: #3b82f6;
+    --accent-soft: rgba(59, 130, 246, 0.12);
+    --success: #10b981;
+    --success-soft: rgba(16, 185, 129, 0.12);
+    --danger: #ef4444;
+    --danger-soft: rgba(239, 68, 68, 0.12);
+    --warning: #f59e0b;
+    --warning-soft: rgba(245, 158, 11, 0.12);
+    --team-red: #ef4444;
+    --team-blue: #3b82f6;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+    min-height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+.mono { font-family: 'JetBrains Mono', 'Roboto Mono', monospace; }
+
+/* ---- Top app bar ----------------------------------------- */
+.appbar {
+    display: flex; align-items: center; gap: 20px;
+    padding: 12px 24px;
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--border);
+}
+
+.brand { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.brand-mark {
+    width: 30px; height: 30px; border-radius: 9px;
+    background: linear-gradient(135deg, #3b82f6, #10b981);
+    display: grid; place-items: center;
+    font-weight: 700; color: #fff; font-size: 15px;
+}
+.brand-text h1 { font-size: 14px; font-weight: 600; letter-spacing: -0.1px; }
+.brand-text p  { font-size: 10.5px; color: var(--text-muted); letter-spacing: 0.3px; }
+
+.progress-bar  { flex: 1; max-width: 520px; margin-left: 12px; }
+.progress-meta { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 11px; }
+.progress-meta .label { color: var(--text-dim); }
+.progress-meta .count { color: var(--accent); font-weight: 600; }
+.progress-track { height: 4px; background: var(--surface); border-radius: 2px; overflow: hidden; }
+.progress-fill  { height: 100%; width: 0%; background: linear-gradient(90deg, #3b82f6, #10b981); border-radius: 2px; transition: width 0.3s ease; }
+
+.clip-chip {
+    margin-left: auto;
+    font-size: 10.5px; color: var(--text-muted);
+    padding: 5px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    max-width: 360px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

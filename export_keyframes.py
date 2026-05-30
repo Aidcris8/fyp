@@ -1,3 +1,5 @@
+# Reads annotated frame numbers from keyframes.json obtained in previous step and exports each
+# marked frame as a JPG image to data/keyframes/. already exported frames are skipped so re runs are safe
 import cv2
 import json
 import os
@@ -25,8 +27,7 @@ print(f"Exporting {len(keyframes)} keyframes...\n")
 for clip_name, frame_num in keyframes.items():
     clip_path = os.path.join(CLIPS_DIR, clip_name)
 
-    #check if clip exists
-    #if it doesnt will warn you that clip not found
+    #check if clip exists if it doesnt will warn you that clip not found
     if not os.path.exists(clip_path):
         print(f"  Clip not found: {clip_name}")
         continue

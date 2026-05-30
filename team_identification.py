@@ -1,3 +1,7 @@
+# This file runs both player detection and team assignments. It runs YOLO player detections on each
+# keyframe and assigns every detected player to either Team 0 or Team 1 or OTH through K-Means clustering in Lab
+# colour space. It saves bounding boxes team labels and foot positions to data/player_detections.json for 
+# use later on in pick_points.py and offside_checker.py
 import cv2
 import numpy as np
 import os
@@ -9,9 +13,11 @@ from sklearn.preprocessing import StandardScaler
 KEYFRAMES_DIR = "data/keyframes"
 OUTPUT_DIR = "data/team_identification"
 DETECTIONS_FILE = "data/player_detections.json"
-# Temporary debug overlay: draws P{idx} above each box and dumps per-player
-# Lab/sat/distance features. Flip to False to remove from final output.
-DEBUG_LABELS = True
+# When True, draws P{idx} above each box on the output image and writes a
+# per-player feature dump (Lab, saturation, distances) to DEBUG_FILE. The
+# evaluation script eval/test_chroma_weight.py reads that dump. Leave False
+# for production runs.
+DEBUG_LABELS = False
 DEBUG_FILE = "data/team_identification_debug.json"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -42,6 +48,7 @@ def get_player_colour(img, box, grass_colour, mask=None):
     height = y2 - y1
     width = x2 - x1
 
+    # reject detections too small to give reliable colour sample
     if height < 20 or width < 10:
         return None
 
@@ -111,9 +118,11 @@ def get_player_colour(img, box, grass_colour, mask=None):
     median_L = np.median(L)
     median_a = np.median(a)
     median_b = np.median(b)
-    #Lab values from OpenSV shifted, pure grey is (128,128) in a/b space ant not (0,0)
+    #Lab values from OpenCV shifted, pure grey is (128,128) in a/b space ant not (0,0)
     sat_proxy = np.median(np.sqrt((a - 128)**2 + (b - 128)**2))
 
+    # scale dark_ratio down for small boxes, tiny distant player with one dark pixel
+    # would otherwise get the same dark score as a close player fully dressed in black
     size_factor = min(1.0, (height * width) / 8000)
     scaled_dark = dark_ratio * 100 * size_factor
 
@@ -294,7 +303,7 @@ def identify_teams(img, boxes, masks, grass_colour, debug=False):
     L_centre1 = centres[1][0]
     L_separation = abs(L_centre0 - L_centre1)
 
-    #if two team centroids differ by more than 30 in brightness, cheack each ivndividual player
+    #if two team centroids differ by more than 30 in brightness, cheack each individual player
     if L_separation > 30:
         print(f"  L-axis correction active (separation={L_separation:.0f})")
         for i, label in enumerate(team_labels):
@@ -533,11 +542,12 @@ def identify_teams(img, boxes, masks, grass_colour, debug=False):
                 print(f"  GK (spatial) T{team_id}: combined={best_combined:.0f} "
                       f"nn={best_nn:.0f}px colour_ratio={best_colour_ratio:.2f}")
 
-    # FIX 5: Officials mini-cluster detection. When 3–5 officials/GKs share a
-    # similar low-sat colour profile they mutually validate each other under the
-    # FIX 1 isolation check. A k=3 K-Means on chromaticity reveals the third
-    # mini-cluster; if it is small, tight, chromatically distinct from both
-    # teams, AND less saturated than both, its members are reclassified OTH.
+    # Officials mini-cluster detection. When 3–5 officials/GKs share a similar
+    # low-sat colour profile they mutually validate each other under the per-
+    # player isolation check earlier in this function. A k=3 K-Means on
+    # chromaticity reveals the third mini-cluster; if it is small, tight,
+    # chromatically distinct from both teams, AND less saturated than both,
+    # its members are reclassified OTH.
     if len(filtered_colours) >= 10:
         try:
             ab_scaled_k3 = StandardScaler().fit_transform(filtered_colours[:, [1, 2]])
@@ -573,18 +583,6 @@ def identify_teams(img, boxes, masks, grass_colour, debug=False):
         except Exception as e:
             print(f"  Officials mini-cluster check skipped ({e})")
 
-    # Hard cap — safety net; raised to 6 to allow referee + 2 GKs + linesmen
-    # note this is for playersi nside identify teams, total cap of OTH in final image is more than just 6 
-    MAX_OTH_PITCH = 6
-    oth_pitch_indices = [i for i, l in enumerate(final_labels) if l == 2]
-    if len(oth_pitch_indices) > MAX_OTH_PITCH:
-        print(f"  OTH cap triggered: {len(oth_pitch_indices)} detected, capping at {MAX_OTH_PITCH}")
-        oth_by_dist = sorted(oth_pitch_indices, key=lambda i: d_nearest[i], reverse=True)
-        to_reassign = oth_by_dist[MAX_OTH_PITCH:]
-        for idx in to_reassign:
-            final_labels[idx] = 0 if dist_to_c0[idx] < dist_to_c1[idx] else 1
-        print(f"  Reassigned {len(to_reassign)} players to nearest team centroid")
-
     # Per-team chroma outlier: a player whose (a, b) is markedly far from the
     # mean (a, b) of their assigned team is wearing a kit different from the
     # team — almost always a goalkeeper. Pass 2's 6D outlier check misses them
@@ -602,7 +600,8 @@ def identify_teams(img, boxes, masks, grass_colour, debug=False):
                 print(f"  Chroma-outlier P{k+1} (T{team_id}) → OTH (cd={cd:.1f})")
                 final_labels[k] = 2
 
-    # Step 4 — Rebuild full labels including pre-flagged
+    # reassemble full player list, re inster preflagged players alongside filtered playuers
+    # whose labels were determined by K-means pipeline above
     all_labels = []
     all_boxes = []
     filtered_ptr = 0
@@ -619,32 +618,36 @@ def identify_teams(img, boxes, masks, grass_colour, debug=False):
     oth_count = sum(1 for l in all_labels if l == 2)
     print(f"  Officials/GK detected: {oth_count}")
 
-    filtered_idx_for = {orig: pos for pos, orig in enumerate(filtered_indices)}
-    players_dbg = []
-    for i in range(len(colours)):
-        c = colours[i]
-        entry = {
-            "box": [int(v) for v in valid_boxes[i]],
-            "label": int(all_labels[i]),
-            "lab": [float(c[0]), float(c[1]), float(c[2])],
-            "dark_score": float(c[3]),
-            "bright_pct": float(c[4]),
-            "sat": float(c[5]),
+    # Per-player feature dump for the debug overlay / eval scripts. Skipped
+    # entirely when debug=False so production runs don't pay for it.
+    debug_info = None
+    if debug:
+        filtered_idx_for = {orig: pos for pos, orig in enumerate(filtered_indices)}
+        players_dbg = []
+        for i in range(len(colours)):
+            c = colours[i]
+            entry = {
+                "box": [int(v) for v in valid_boxes[i]],
+                "label": int(all_labels[i]),
+                "lab": [float(c[0]), float(c[1]), float(c[2])],
+                "dark_score": float(c[3]),
+                "bright_pct": float(c[4]),
+                "sat": float(c[5]),
+            }
+            if i in pre_flag_reasons:
+                entry["pre_flag"] = pre_flag_reasons[i]
+                entry["dist_to_c0"] = None
+                entry["dist_to_c1"] = None
+            else:
+                fi = filtered_idx_for[i]
+                entry["pre_flag"] = None
+                entry["dist_to_c0"] = float(dist_to_c0[fi])
+                entry["dist_to_c1"] = float(dist_to_c1[fi])
+            players_dbg.append(entry)
+        debug_info = {
+            "centres": [[float(v) for v in centres[0]], [float(v) for v in centres[1]]],
+            "players": players_dbg,
         }
-        if i in pre_flag_reasons:
-            entry["pre_flag"] = pre_flag_reasons[i]
-            entry["dist_to_c0"] = None
-            entry["dist_to_c1"] = None
-        else:
-            fi = filtered_idx_for[i]
-            entry["pre_flag"] = None
-            entry["dist_to_c0"] = float(dist_to_c0[fi])
-            entry["dist_to_c1"] = float(dist_to_c1[fi])
-        players_dbg.append(entry)
-    debug_info = {
-        "centres": [[float(v) for v in centres[0]], [float(v) for v in centres[1]]],
-        "players": players_dbg,
-    }
     return np.array(all_labels), all_boxes, debug_info
 
 #take image and label+box lists from identify teams and draw them on a copy of the image 
@@ -717,19 +720,21 @@ if DEBUG_LABELS and os.path.exists(DEBUG_FILE):
 # Loop through all keyframes
 keyframes = sorted([f for f in os.listdir(KEYFRAMES_DIR) if f.endswith(".jpg")])
 
-for test_kf in keyframes:
-    if test_kf in detections:
-        print(f"  Skipping (already processed): {test_kf}")
+for kf in keyframes:
+    if kf in detections:
+        print(f"  Skipping (already processed): {kf}")
         continue
-    print(f"\nTesting on: {test_kf}")
-    img_path = os.path.join(KEYFRAMES_DIR, test_kf)
+    print(f"\nProcessing: {kf}")
+    img_path = os.path.join(KEYFRAMES_DIR, kf)
     img = cv2.imread(img_path)
     frame_height = img.shape[0]
     frame_width = img.shape[1]
 
     grass_colour = get_grass_colour(img)
 
-    # Probe run to determine adaptive thresholds (now with masks)
+    # first YOLO pass at conf = 0.3 to measure typical player box height in this frame
+    # players appear smaller when they are on top of the pitch and camera is zoomed out so minimum detectoin
+    # height and upper zone boundaries are set adaptively based on the median box height
     results_probe = model(img, classes=[0], conf=0.3, iou=0.7,
                           retina_masks=True, verbose=False)
     probe_pairs = get_box_mask_pairs(results_probe, img.shape[:2])
@@ -752,7 +757,8 @@ for test_kf in keyframes:
     # First pass using adaptive threshold
     player_pairs = [(b, m) for b, m in probe_pairs if (b[3] - b[1]) > min_height]
 
-    # Second pass - low confidence for upper portion
+    # second pass at conf =0.05 to catch distant players at far end of pitch
+    # restricted to upper portion of frame to avoid flooding with false positives near camera 
     results_low = model(img, classes=[0], conf=0.05, iou=0.7,
                         retina_masks=True, verbose=False)
     low_pairs = get_box_mask_pairs(results_low, img.shape[:2])
@@ -771,10 +777,13 @@ for test_kf in keyframes:
                 if iou > 0.4:
                     duplicate = True
                     break
+            # prevents adding duplicate boxes
             if not duplicate:
                 player_pairs.append((box, mask))
 
-    # Gap-based dynamic bottom cutoff
+    # detect a large vertical gap between main player cluster and small group at the bottom edge
+    # usually advertising board personnel or cameramen, if gap is big enough and bottom group
+    # are 3 or fewer detections, cutoff is moved up to exclude them
     all_centres_y = sorted([(b[1] + b[3]) / 2 for b, _ in player_pairs])
     dynamic_bottom = frame_height * 0.88
     if len(all_centres_y) > 4:
@@ -787,9 +796,9 @@ for test_kf in keyframes:
         if max_gap > 50 and bottom_count <= 3 and all_near_bottom:
             dynamic_bottom = (all_centres_y[max_gap_idx] + all_centres_y[max_gap_idx+1]) / 2
 
-    # FIX 4: Extended touchline (50→55) + corner filter. Catches ballboys/staff
-    # sitting in the upper or lower image corners outside the playable pitch
-    # area but within YOLO's detection zone.
+    # touchline + corner filter, this catches ballboys, stewards and other staff
+    # sitting in the image corners outside the playable pitch area but still
+    # within YOLO's person-detection zone
     non_player_pairs = []
     pitch_pairs = []
     for box, mask in player_pairs:
@@ -800,15 +809,15 @@ for test_kf in keyframes:
         on_touchline = (centre_x < 80 and box_h < 55) or \
                        (centre_x > frame_width - 80 and box_h < 55)
         in_bottom_zone = centre_y > dynamic_bottom and box_h < 70
-        # Any detection whose feet (y2) are in the top 12% of the frame is
+        # any detection whose feet (y2) are in the top 12% of the frame is
         # above the far-touchline hoarding — stewards, not outfield players.
         near_top_hoarding = y2 < frame_height * 0.12
-        # Persons near the top of the frame AND within 20% of the left/right
+        # people near the top of the frame AND within 20% of the left/right
         # edge are almost always near-goal stewards or photographers.
         near_goal_zone = (centre_x < frame_width * 0.20 or
                           centre_x > frame_width * 0.80) and \
                          centre_y < frame_height * 0.25 and box_h < 65
-        # Corner filter — only bottom corners. Upper corners are the FAR end
+        # corner filter — only bottom corners. Upper corners are the FAR end
         # of the pitch on broadcast cameras, where real defenders legitimately
         # appear small (bh < 55) due to perspective.
         in_corner_x = (centre_x < frame_width * 0.18) or (centre_x > frame_width * 0.82)
@@ -822,19 +831,28 @@ for test_kf in keyframes:
     print(f"  Dynamic bottom cutoff: {dynamic_bottom:.0f}px")
     print(f"  Touchline/bottom officials removed: {len(non_player_pairs)}")
 
+    # seperate the filtered detections into boxes and masks for identify_teams
+    # keeping non_player_boxes aside so they can be appended as OTH afterwards
     pitch_boxes = [b for b, _ in pitch_pairs]
     pitch_masks = [m for _, m in pitch_pairs]
     non_player_boxes = [b for b, _ in non_player_pairs]
 
     print(f"  Players detected: {len(pitch_boxes)}")
 
-    labels, valid_boxes, dbg = identify_teams(img, pitch_boxes, pitch_masks, grass_colour)
+    # run full team classification pipelien on the onpitch players only (after filtering out off pitch people)
+    labels, valid_boxes, dbg = identify_teams(img, pitch_boxes, pitch_masks, grass_colour,
+                                              debug=DEBUG_LABELS)
     if len(labels) > 0:
+        # merge K-means results with touchline/corner detections already classified
+        # as OTH - the final list covers every detection in the frame
         all_labels = list(labels) + [2] * len(non_player_boxes)
         all_boxes = list(valid_boxes) + non_player_boxes
+        # draw coloured bounding boxes on a copy of the frame and save to disk 
+        # so team assignments can be visually verified for debugging
         output_img = draw_teams(img, np.array(all_labels), all_boxes, draw_indices=DEBUG_LABELS)
-        cv2.imwrite(os.path.join(OUTPUT_DIR, test_kf), output_img)
+        cv2.imwrite(os.path.join(OUTPUT_DIR, kf), output_img)
 
+        # when debugging, add touchline/corner detections to per-player debug dump so eval scripts have a complete picture of the frmae
         if DEBUG_LABELS:
             for nb in non_player_boxes:
                 x1, y1, x2, y2 = map(int, nb)
@@ -843,9 +861,9 @@ for test_kf in keyframes:
                     "label": 2,
                     "filtered_as": "touchline_or_corner",
                 })
-            debug_data[test_kf] = dbg
+            debug_data[kf] = dbg
 
-        # Save player data to JSON
+        # save player data to JSON
         players_data = []
         for box, label in zip(all_boxes, all_labels):
             x1, y1, x2, y2 = map(int, box)
@@ -853,14 +871,16 @@ for test_kf in keyframes:
             players_data.append({
                 "box": [x1, y1, x2, y2],
                 "team": int(label),
+                #foot position is bottom center of bounding box used as ground contact point when projecting to world coordinates later on
                 "foot_px": [cx, y2]
             })
-        detections[test_kf] = {"players": players_data}
+        detections[kf] = {"players": players_data}
         print(f"  Saved")
     else:
         print("  Skipped - insufficient players")
 
-# Save all detections to JSON
+# save all detections to JSON at the end rather then per frame so a crash whilst running
+# wouldnt corrupt output file
 with open(DETECTIONS_FILE, "w") as f:
     json.dump(detections, f, indent=2)
 print(f"\nPlayer detections saved to {DETECTIONS_FILE}")

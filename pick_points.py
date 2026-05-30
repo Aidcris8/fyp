@@ -1,3 +1,6 @@
+# This file implements a browser-based UI for users to pick pixel-to-world correspondence points on each keyframe
+# The user clicks on a pitch landmark on the actual keyframe and then selects its real world FIFA coordinates on the 2d displayed pitch 
+# These pairs are then saved to homography_points.json and used by compute_homography.py to fit homography matrix per frame
 import cv2
 import json
 import os
@@ -9,13 +12,14 @@ from urllib.parse import urlparse
 
 KEYFRAMES_DIR = "data/keyframes"
 OUTPUT_FILE = "data/homography_points.json"
+SKIPPED_FILE = "data/homography_skipped.json"
 MIN_POINTS = 4   #mathematical minimum, minimum 4 points to solve homography, the more points the more accurate
 SUBPIX_WIN = 7   #search window size used when refining clicks to subpixel accuracy, 7x7 pixel neighbourhood around your click
 
 def refine_click(img_bgr, x, y, win=SUBPIX_WIN):
-    """Refine a click to subpixel using cornerSubPix. Falls back to the
-    original click if refinement fails or moves the point further than the
-    search window (which would indicate a spurious convergence)."""
+    # refine a raw pixel click to subpixel accuracy using cornerSubPix
+    # falls back to the original click if refinement fails or the point
+    # jumps further than the search window (spurious convergence)
     try:
         #converts greyscale since pixel refinement works on intensity gradients, no need to know about colour
         gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)  
@@ -44,16 +48,31 @@ if os.path.exists(OUTPUT_FILE):
     with open(OUTPUT_FILE) as f:
         all_points = json.load(f)
 else:
-    all_points = {}  #dictionary keyed by keyframe filename, value list of point pairs 
+    all_points = {}  #dictionary keyed by keyframe filename, value list of point pairs
+
+# Frames the user has given up on (insufficient usable landmarks). Excluded
+# from PENDING so they do not reappear next session.
+if os.path.exists(SKIPPED_FILE):
+    with open(SKIPPED_FILE) as f:
+        skipped = set(json.load(f))
+else:
+    skipped = set()
+
+# persist the skipped set so frames with insufficient landmarks are not re-queud next session
+def save_skipped():
+    with open(SKIPPED_FILE, "w") as f:
+        json.dump(sorted(skipped), f, indent=2)
 
 # get all keyframes that need annotation (fewer than MIN_POINTS)
 ALL_KEYFRAMES = sorted([f for f in os.listdir(KEYFRAMES_DIR) if f.endswith(".jpg")])
-#keyframes with fewer than 4 points are added to pending, frames with more than 4 points are skipped
+#keyframes with fewer than 4 points and not already skipped are added to pending
 PENDING = [kf for kf in ALL_KEYFRAMES
-           if len(all_points.get(kf, [])) < MIN_POINTS]
+           if len(all_points.get(kf, [])) < MIN_POINTS
+           and kf not in skipped]
 
 print(f"Total keyframes: {len(ALL_KEYFRAMES)}")
-print(f"Already have enough points: {len(ALL_KEYFRAMES) - len(PENDING)}")
+print(f"Already have enough points: {len(ALL_KEYFRAMES) - len(PENDING) - len(skipped)}")
+print(f"Previously skipped: {len(skipped)}")
 print(f"Remaining to annotate: {len(PENDING)}")
 
 if len(PENDING) == 0:
@@ -67,6 +86,7 @@ state = {
     "done": False                                       #still working on the frame so not done
 }
 
+# load a keyframe from disk called on every /iamge and /add_point request
 def load_image(kf_name):
     img_path = os.path.join(KEYFRAMES_DIR, kf_name)
     img = cv2.imread(img_path)
@@ -100,66 +120,10 @@ HTML = """
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/ui.css">
     <style>
-        :root {
-            --bg: #0a0b10;
-            --bg-elev: #12141c;
-            --surface: #171a24;
-            --surface-2: #1e2230;
-            --border: #262b3d;
-            --border-soft: #1e2230;
-            --text: #e6e8ee;
-            --text-dim: #9aa0b0;
-            --text-muted: #6b7085;
-            --accent: #3b82f6;
-            --accent-soft: rgba(59, 130, 246, 0.12);
-            --success: #10b981;
-            --success-soft: rgba(16, 185, 129, 0.12);
-            --danger: #ef4444;
-            --danger-soft: rgba(239, 68, 68, 0.12);
-            --warning: #f59e0b;
-            --warning-soft: rgba(245, 158, 11, 0.12);
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body {
-            min-height: 100%;
-            background: var(--bg);
-            color: var(--text);
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            font-size: 14px; line-height: 1.5;
-            -webkit-font-smoothing: antialiased;
-        }
-        .appbar {
-            display: flex; align-items: center; gap: 20px;
-            padding: 12px 24px;
-            background: var(--bg-elev);
-            border-bottom: 1px solid var(--border);
-        }
-        .brand { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-        .brand-mark {
-            width: 30px; height: 30px; border-radius: 9px;
-            background: linear-gradient(135deg, #3b82f6, #10b981);
-            display: grid; place-items: center;
-            font-weight: 700; color: #fff; font-size: 15px;
-        }
-        .brand-text h1 { font-size: 14px; font-weight: 600; letter-spacing: -0.1px; }
-        .brand-text p { font-size: 10.5px; color: var(--text-muted); letter-spacing: 0.3px; }
-        .progress-bar { flex: 1; max-width: 520px; margin-left: 12px; }
-        .progress-meta { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 11px; }
-        .progress-meta .label { color: var(--text-dim); }
-        .progress-meta .count { color: var(--accent); font-weight: 600; }
-        .progress-track { height: 4px; background: var(--surface); border-radius: 2px; overflow: hidden; }
-        .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #3b82f6, #10b981); border-radius: 2px; transition: width 0.3s ease; }
-        .clip-chip {
-            margin-left: auto;
-            font-size: 10.5px; color: var(--text-muted);
-            padding: 5px 10px;
-            background: var(--surface);
-            border: 1px solid var(--border-soft);
-            border-radius: 6px;
-            max-width: 360px;
-            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        }
+        /* UI-specific styles for the point picker. Palette, fonts and
+           top-bar live in /static/ui.css. */
         .layout {
             display: grid; grid-template-columns: 1fr 340px;
             gap: 20px; padding: 16px 24px 24px;
@@ -370,7 +334,7 @@ HTML = """
             <div class="brand-mark">&#8903;</div>
             <div class="brand-text">
                 <h1>Point Picker</h1>
-                <p>Homography calibration &middot; FYP</p>
+                <p>Football CV &middot; Final Year Project</p>
             </div>
         </div>
         <div class="progress-bar">
@@ -382,7 +346,7 @@ HTML = """
                 <div class="progress-fill" id="progress-fill"></div>
             </div>
         </div>
-        <div class="clip-chip" style="font-family:'JetBrains Mono',monospace" id="clip-name">&mdash;</div>
+        <div class="clip-chip mono" id="clip-name">&mdash;</div>
     </div>
 
     <div class="layout">
@@ -533,6 +497,7 @@ HTML = """
         let selectedPixel = null;
         let imgWidth = 0, imgHeight = 0;
 
+        // fetch the current keyframe from the server with any existing points drawn on it
         function loadImage() {
             fetch('/image').then(r => r.json()).then(data => {
                 const img = new Image();
@@ -547,7 +512,7 @@ HTML = """
                 updateUI(data);
             });
         }
-
+        // update the top bar, point list, and status hint to reflect the latest server response
         function updateUI(data) {
             document.getElementById('clip-name').textContent = data.clip_name;
             const pct = data.total > 0 ? (data.clip_index / data.total) * 100 : 0;
@@ -583,7 +548,7 @@ HTML = """
             }
         }
 
-        /* Frame canvas: track cursor and pick pixel */
+        // track cursor position over the canvas and display pixel coordinates in real time
         canvas.addEventListener('mousemove', function(e) {
             const rect = canvas.getBoundingClientRect();
             const x = Math.round((e.clientX - rect.left) * (imgWidth / rect.width));
@@ -591,10 +556,12 @@ HTML = """
             document.getElementById('cursor-coords').textContent = '(' + x + ', ' + y + ')';
         });
 
+        // clear the coordinate display when the cursor leaves the canvas
         canvas.addEventListener('mouseleave', function() {
             document.getElementById('cursor-coords').textContent = '&mdash;';
         });
 
+        // on canvas click, store the pixel coordinate and wait for the user to pick a landmark
         canvas.addEventListener('click', function(e) {
             const rect = canvas.getBoundingClientRect();
             const x = Math.round((e.clientX - rect.left) * (imgWidth / rect.width));
@@ -624,6 +591,8 @@ HTML = """
                 hint.className = 'pitch-hint';
             });
 
+            // when a landmark is clicked, populate the real-world coordinate fields
+            // and auto-submit the point if the pixel was already selected
             el.addEventListener('click', function() {
                 const rx = parseFloat(el.dataset.x);
                 const ry = parseFloat(el.dataset.y);
@@ -654,6 +623,7 @@ HTML = """
             s.className = 'status ' + (kind || 'hint');
         }
 
+        // send the current pixel + real-world pair to the server and refresh the canvas
         function addPoint() {
             if (!selectedPixel) { setStatus('Click on the frame first', 'warn'); return; }
             const rx = parseFloat(document.getElementById('real-x').value);
@@ -682,12 +652,14 @@ HTML = """
             });
         }
 
+        // remove the most recently added point and refresh the canvas
         function deleteLastPoint() {
             fetch('/delete_point', {method: 'POST'}).then(r => r.json()).then(data => {
                 updateUI(data); loadImage();
             });
         }
 
+        // replace the page with a simple done screen when all frames have been processed
         function showDone(title, color, sub) {
             document.body.innerHTML =
                 '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:Inter,sans-serif;background:#0a0b10;">' +
@@ -697,6 +669,7 @@ HTML = """
                 '</div></div>';
         }
 
+        // advance to the next frame — server handles the skip/save logic based on point count
         function nextFrame() {
             fetch('/next', {method: 'POST'}).then(r => r.json()).then(data => {
                 if (data.done) {
@@ -719,6 +692,7 @@ HTML = """
             });
         }
 
+        // hard skip — permanently removes the keyframe from the pipeline
         function skipFrame() {
             fetch('/skip', {method: 'POST'}).then(r => r.json()).then(data => {
                 if (data.done) {
@@ -736,18 +710,36 @@ HTML = """
 </html>
 """
 
+# HTTP request handler - GET serves the UI pafe and assets 
+# POST handles all useri nteractions in the browser
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args): pass
     def log_error(self, format, *args): pass
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        #serves the main HTML page
         if parsed.path == '/':
             self.send_response(200)
             self.send_header('Content-type', 'text/html; charset=utf-8')
             self.end_headers()
             self.wfile.write(HTML.encode())
 
+        # serves shared stylesheet , hardcoded path 
+        elif parsed.path == '/static/ui.css':
+            try:
+                with open('static/ui.css', 'rb') as f:
+                    css_bytes = f.read()
+                self.send_response(200)
+                self.send_header('Content-type', 'text/css; charset=utf-8')
+                self.send_header('Content-length', str(len(css_bytes)))
+                self.end_headers()
+                self.wfile.write(css_bytes)
+            except FileNotFoundError:
+                self.send_response(404)
+                self.end_headers()
+
+        # returns current keuframe with existing points drawn on it
         elif parsed.path == '/image':
             kf = PENDING[state["index"]]
             img = load_image(kf)
@@ -770,20 +762,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length)
 
+        #helper to send JSON response, used by every POST route
         def respond(data):
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps(data).encode())
 
+        # moves to next pending frame
         def advance():
             state["index"] += 1
             if state["index"] >= len(PENDING):
                 state["done"] = True
+                #returns true if all frames are done
                 return True
             state["points"] = all_points.get(PENDING[state["index"]], []).copy()
             return False
 
+        # receives a pixel click and real world coordinate pair, refine click to subpixel
+        # accuracy and adds it to current frames point list
         if parsed.path == '/add_point':
             data = json.loads(body)
             kf = PENDING[state["index"]]
@@ -795,9 +792,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "image": [x_ref, y_ref],
                 "real": data["real"]
             })
-            all_points[kf] = state["points"]
-            with open(OUTPUT_FILE, "w") as f:
-                json.dump(all_points, f, indent=2)
+            save_points()
             respond({
                 "points": state["points"],
                 "clip_name": kf,
@@ -805,13 +800,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "total": len(PENDING)
             })
 
+        # removes most recently added point from current frame
         elif parsed.path == '/delete_point':
             if state["points"]:
                 state["points"].pop()
+            save_points()
             kf = PENDING[state["index"]]
-            all_points[kf] = state["points"]
-            with open(OUTPUT_FILE, "w") as f:
-                json.dump(all_points, f, indent=2)
             respond({
                 "points": state["points"],
                 "clip_name": kf,
@@ -819,12 +813,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "total": len(PENDING)
             })
 
+        # advance to next frame
         elif parsed.path == '/next':
-            save_points()
-            print(f"  Saved {len(state['points'])} points for {PENDING[state['index']]}")
+            kf = PENDING[state["index"]]
+            if len(state["points"]) < MIN_POINTS:
+                # if user clicks next without enough points to fit a homography, the frame is 
+                # marked as skipped so it doesn't re-queue next session, and evict any partial points so homography_points.json stays clean
+                skipped.add(kf)
+                save_skipped()
+                if kf in all_points:
+                    all_points.pop(kf)
+                    with open(OUTPUT_FILE, "w") as f:
+                        json.dump(all_points, f, indent=2)
+                print(f"  Skipped (insufficient: {len(state['points'])}/{MIN_POINTS}): {kf}")
+            else:
+                save_points()
+                print(f"  Saved {len(state['points'])} points for {kf}")
             done = advance()
             respond({"done": done})
 
+        # hard skip permandently deletes the keyframe JPG and removes it from the pipeline
+        # done in cases where image either low quality or doesnt have enough landmarks visible
         elif parsed.path == '/skip':
             kf = PENDING[state["index"]]
             img_path = os.path.join(KEYFRAMES_DIR, kf)
@@ -837,6 +846,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             done = advance()
             respond({"done": done})
 
+#server binds to all interfaces so it is reachable from windows browsers over WSL2, main thread waits until all frames are done or user clicks CTRL+c
 PORT = 5001
 print(f"\nStarting point picker at http://localhost:{PORT}")
 print("Open that URL in your Windows browser")

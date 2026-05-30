@@ -1,25 +1,27 @@
-"""
-Tests different chroma weighting values applied after StandardScaler
-before K-Means clustering. Uses the already-computed per-player feature
-vectors from team_identification_debug.json so YOLO does not need to re-run.
+# Tests different chroma weighting values applied after StandardScaler before K-Means.
+# Uses per-player feature vectors from data/team_identification_debug.json so YOLO
+# does not need to re-run. Requires team_identification.py to have been run once with
+# DEBUG_LABELS = True to generate that file.
+# Metric: average cluster balance = min(c0,c1)/max(c0,c1) across all frames.
+# 1.0 = perfect 50/50 split. The weight of 1.8 in the pipeline was selected from these results.
+# Run from the project root: python eval/test_chroma_weight.py
 
-Metric: average cluster balance = min(c0,c1)/max(c0,c1) across all frames.
-1.0 = perfect 50/50 split.  Higher is better.
-"""
 import json
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
 DEBUG_FILE = "data/team_identification_debug.json"
-WEIGHTS    = [1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0]
+WEIGHTS    = [1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0]  # candidate weights to test and random seeds for reproducibility
 SEEDS      = [42, 0, 7, 13, 99]
 
+# load the per-player feature dump produced by team_identification.py in debug mode
 with open(DEBUG_FILE) as f:
     debug_data = json.load(f)
 
+# run K-Means with the given chroma weight applied to the a* and b* channels,
+# try multiple seeds and return the best cluster balance achieved
 def run_clustering(features, weight):
-    """Run K-Means with given chroma weight, return best balance score."""
     scaler = StandardScaler()
     scaled = scaler.fit_transform(features)
     scaled[:, 1] *= weight   # a*
@@ -45,17 +47,19 @@ for fname, frame_data in debug_data.items():
     if len(active) < 4:
         continue
 
+    # build the same 6-column feature matrix used by the real pipeline
     features = np.array([
         [p["lab"][0], p["lab"][1], p["lab"][2],
          p["dark_score"], p["bright_pct"], p["sat"]]
         for p in active
     ], dtype=np.float32)
 
+    # test every candidate weight on this frame's feature set
     for w in WEIGHTS:
         balance = run_clustering(features, w)
         results[w].append(balance)
 
-# Print summary table
+# print summary table
 print(f"\n{'Weight':>8}  {'Avg balance':>12}  {'Frames <0.5':>12}  {'Frames <0.7':>12}  {'Min balance':>12}")
 print("─" * 70)
 for w in WEIGHTS:

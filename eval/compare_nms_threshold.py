@@ -1,15 +1,11 @@
-"""
-Compares NMS IoU threshold 0.45 (YOLO default) vs 0.7 (project value).
-Saves side-by-side images to data/nms_comparison/.
+# Compares NMS IoU threshold 0.45 (YOLO default) vs 0.7 (the value used in this project)
+# Saves side-by-side images to data/nms_comparison/
+# Green = present at both thresholds. Red = only at 0.45 (two players merged at 0.7)
+# Blue = only at 0.7 (should not occur — 0.7 is more permissive)
+# A red box at 0.45 that disappears at 0.7 means two overlapping boxes were correctly
+# merged, or a real player was suppressed — the visual makes it clear which
+# Run from the project root: python eval/compare_nms_threshold.py
 
-Green boxes = detections present at BOTH thresholds.
-Red boxes   = only present at 0.45 (merged/suppressed at 0.7 — genuine separate players).
-Blue boxes  = only present at 0.7  (shouldn't happen — 0.7 is more permissive).
-
-A red box at 0.45 that disappears at 0.7 means two overlapping boxes were kept at 0.45
-but correctly merged into one at 0.7 — OR a real player was suppressed at 0.45.
-The visual tells you which.
-"""
 import cv2
 import numpy as np
 import os
@@ -21,9 +17,11 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 model = YOLO("yolo11x-seg.pt")
 
+# two NMS thresholds being compared
 THRESHOLD_A = 0.45   # YOLO default
 THRESHOLD_B = 0.70   # project value
 
+# extract all class-0 (person) bounding boxes from a YOLO result
 def get_boxes(results):
     boxes_obj = results[0].boxes
     if boxes_obj is None:
@@ -32,6 +30,7 @@ def get_boxes(results):
              int(b.xyxy[0][2]), int(b.xyxy[0][3]))
             for b in boxes_obj if int(b.cls[0]) == 0]
 
+# compute intersection over union between two boxes
 def iou(a, b):
     ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
     ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
@@ -40,8 +39,8 @@ def iou(a, b):
         return 0.0
     return inter / ((a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - inter)
 
+# match boxes between two detection sets by IoU, returns shared boxes, boxes only in A, boxes only in B
 def match_boxes(set_a, set_b, threshold=0.4):
-    """Return (shared_a, only_a, only_b) index sets."""
     matched_a, matched_b = set(), set()
     for i, a in enumerate(set_a):
         for j, b in enumerate(set_b):
@@ -55,6 +54,7 @@ def match_boxes(set_a, set_b, threshold=0.4):
     return shared, only_a, only_b
 
 frames = sorted(os.listdir(KEYFRAMES_DIR))
+# per-frame summary, stores detection counts for both thresholds for the final table
 summary = []
 
 for fname in frames:
@@ -63,6 +63,7 @@ for fname in frames:
         continue
     height, width = img.shape[:2]
 
+    # run YOLO twice on the same frame with the two different NMS thresholds
     r_a = model(img, classes=[0], conf=0.3, iou=THRESHOLD_A,
                 retina_masks=False, verbose=False)
     r_b = model(img, classes=[0], conf=0.3, iou=THRESHOLD_B,
@@ -75,10 +76,11 @@ for fname in frames:
 
     summary.append((fname, len(boxes_a), len(boxes_b), len(only_a), len(only_b)))
 
+    # build the two comparison panels — left shows 0.45, right shows 0.70
     left  = img.copy()
     right = img.copy()
 
-    # Left panel: iou=0.45
+    # left panel: iou=0.45
     for box in shared:
         cv2.rectangle(left, (box[0], box[1]), (box[2], box[3]), (0, 200, 0), 2)
     for box in only_a:
@@ -86,7 +88,7 @@ for fname in frames:
         cv2.putText(left, "extra", (box[0], box[1]-4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
 
-    # Right panel: iou=0.70
+    # right panel: iou=0.70
     for box in shared:
         cv2.rectangle(right, (box[0], box[1]), (box[2], box[3]), (0, 200, 0), 2)
     for box in only_b:
@@ -100,10 +102,11 @@ for fname in frames:
         cv2.putText(panel, title, (8, 24),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
+    # stack side-by-side and save
     combined = np.hstack([left, right])
     cv2.imwrite(os.path.join(OUTPUT_DIR, fname), combined)
 
-# Print summary
+# compute summary statistics across all frames
 diff_frames = [(f, a, b, oa, ob) for f, a, b, oa, ob in summary if oa > 0 or ob > 0]
 total_extra_045 = sum(oa for _, _, _, oa, _ in summary)
 total_extra_070 = sum(ob for _, _, _, _, ob in summary)

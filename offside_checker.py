@@ -1,3 +1,7 @@
+# This file implements a browser-based UI for reviewing each keyframe and determining the verdict. 
+# The user selects the attacking team, attacking direction, and the player recieving the ball
+# The system then automatically finds the second-to-last defender and computes the offside line using the homography matrix for that frame
+# verdicts are all saved to data/offside_verdicts.json
 import cv2
 import json
 import os
@@ -10,19 +14,19 @@ from urllib.parse import parse_qs, urlparse
 KEYFRAMES_DIR = "data/keyframes"
 DETECTIONS_FILE = "data/player_detections.json"
 HOMOGRAPHY_FILE = "data/homography_matrices.json"
-POINTS_FILE = "data/homography_points.json"
 OUTPUT_DIR    = "data/offside_results"
 VERDICTS_FILE = "data/offside_verdicts.json"
+SKIPPED_FILE  = "data/offside_skipped.json"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# load player detections
 with open(DETECTIONS_FILE) as f:
     all_detections = json.load(f)
+#load homography matrices
 with open(HOMOGRAPHY_FILE) as f:
     all_homographies = json.load(f)
-with open(POINTS_FILE) as f:
-    all_corr_points = json.load(f)
 
-# Load persisted verdicts so completed frames are skipped on restart.
+# load persisted verdicts so completed frames are skipped on restart.
 if os.path.exists(VERDICTS_FILE):
     with open(VERDICTS_FILE) as f:
         all_verdicts = json.load(f)
@@ -32,6 +36,18 @@ else:
 def save_verdicts():
     with open(VERDICTS_FILE, "w") as f:
         json.dump(all_verdicts, f, indent=2)
+
+# frames the user passed on without saving a verdict. Excluded from
+# USABLE_FRAMES so they do not reappear next session.
+if os.path.exists(SKIPPED_FILE):
+    with open(SKIPPED_FILE) as f:
+        skipped_verdicts = set(json.load(f))
+else:
+    skipped_verdicts = set()
+
+def save_skipped_verdicts():
+    with open(SKIPPED_FILE, "w") as f:
+        json.dump(sorted(skipped_verdicts), f, indent=2)
 
 INVALID_ZONE_THRESHOLD = 0.15  # skip frames where >15% of the player zone has H[2]<=0
 
@@ -44,13 +60,16 @@ def has_reliable_homography(kf):
         return False
     return True
 
+# build the list of eligible frames i.e frames with reliable homography
 ALL_FRAMES = sorted([
     kf for kf in all_detections
     if has_reliable_homography(kf)
 ])
-USABLE_FRAMES = [kf for kf in ALL_FRAMES if kf not in all_verdicts]
+USABLE_FRAMES = [kf for kf in ALL_FRAMES
+                 if kf not in all_verdicts and kf not in skipped_verdicts]
 print(f"Total eligible frames : {len(ALL_FRAMES)}")
 print(f"Already done          : {len(all_verdicts)}")
+print(f"Previously skipped    : {len(skipped_verdicts)}")
 print(f"Remaining this session: {len(USABLE_FRAMES)}")
 for kf in USABLE_FRAMES:
     parts = kf.split('_frame')
@@ -59,6 +78,7 @@ for kf in USABLE_FRAMES:
     else:
         print(f"  {kf[-50:]}")
 
+# sessions starts , reset on each new frame
 state = {
     "index": 0,
     "attacking_team": None,
@@ -69,20 +89,21 @@ state = {
 }
 
 def attacking_larger_wx(H, attacking_right):
-    """Return True if the attacking direction corresponds to increasing world_x.
-    Samples the homography at two image x-positions to detect whether the
-    homography axis is flipped relative to image-space left/right."""
+    # returns True if the attacking direction corresponds to increasing world_x
+    # samples the homography at two image x-positions to detect whether the
+    # homography axis is flipped relative to image-space left/right
     left_wx,  _ = project_point(H, 320, 360)
     right_wx, _ = project_point(H, 960, 360)
     image_right_is_world_right = right_wx > left_wx
     return attacking_right == image_right_is_world_right
 
 def find_auto_defender(kf, attacking_team, attacking_right):
-    """Return index of the most-advanced outfield defender using world-space
-    coordinates. Detects homography axis orientation so image-space
-    attacking_right is correctly translated to world-space direction."""
+    # returns the index of the most-advanced outfield defender using world-space coordinates
+    # detects homography axis orientation so image-space attacking_right is correctly
+    # translated to world-space direction before ranking defenders
     players = all_detections[kf]["players"]
     H = np.array(all_homographies[kf]["H"])
+    # defending team always opposite to attacking time
     defending_team = 1 - attacking_team
     defending = [(i, p) for i, p in enumerate(players) if p["team"] == defending_team]
     if not defending:
@@ -90,21 +111,23 @@ def find_auto_defender(kf, attacking_team, attacking_right):
 
     going_larger = attacking_larger_wx(H, attacking_right)
 
+    # project player's foot center into world space and return X coordinate
     def world_x_center(p):
         x1, y1, x2, y2 = p["box"]
         cx = (x1 + x2) / 2
         wx, _ = project_point(H, cx, y2)
         return wx
 
+    # reject detections whose foot projection lands outside physical pitch boundary
     def within_pitch(p):
         x1, y1, x2, y2 = p["box"]
         cx = (x1 + x2) / 2
         wx, wy = project_point(H, cx, y2)
         return abs(wx) <= 55.0 and abs(wy) <= 36.0
 
-    # Exclude defenders whose foot projection falls outside the pitch boundary.
-    # These are almost always stewards or pitch-side personnel mis-detected as
-    # outfield players (a 105x68 m pitch means |X|>55 or |Y|>36 is impossible).
+    # exclude defenders whose foot projection falls outside the pitch boundary
+    # these are almost always stewards or pitch-side personnel mis-detected as
+    # outfield players (a 105x68 m pitch means |X|>55 or |Y|>36 is impossible)
     on_pitch = [(i, p) for i, p in defending if within_pitch(p)]
     if not on_pitch:
         on_pitch = defending  # fallback if filter removes everyone
@@ -120,37 +143,42 @@ def find_auto_defender(kf, attacking_team, attacking_right):
     for i, p in ranked:
         print(f"    P{i}: center_world_x={world_x_center(p):.2f}m")
 
+    #pick first player in ranked list , most advance defender
     chosen = ranked[0][0]
     print(f"  → Chosen: P{chosen}")
     return chosen
 
+# convenience helper to pull current frame's players and homography matrix
 def get_frame_data():
     kf = USABLE_FRAMES[state["index"]]
     players = all_detections[kf]["players"]
     H = np.array(all_homographies[kf]["H"])
     return kf, players, H
 
+# project an image pixel (px, py) into world coordinates through H 
 def project_point(H, px, py):
+    # convert pixel to homogenoues coordinates, apply H, then divide by third component
     pt = np.array([px, py, 1.0])
     proj = H @ pt
     proj /= proj[2]
     return float(proj[0]), float(proj[1])
 
-def is_valid_projection(rx, ry):
-    return -60 < rx < 60 and -40 < ry < 40
-
+# compute the image space slope of the offside line at the defender's feet position
+# line is vertical in world space but appears tilted in imge due to perspective
 def get_line_slope(kf, offside_line_x, defender_y, H):
     H_inv = np.linalg.inv(H)
 
+    # inner helper, project world point back into image space using H_inv
     def real_to_image(rx, ry):
         pt = np.array([rx, ry, 1.0])
         img_pt = H_inv @ pt
         img_pt /= img_pt[2]
         return float(img_pt[0]), float(img_pt[1])
-
+    # sample two points 5m apart along the pitch and measure the tilt via H_inv
     dy = 5.0
     px1 = real_to_image(offside_line_x, defender_y - dy)
     px2 = real_to_image(offside_line_x, defender_y + dy)
+    # measure how far line shifts horizontally per unit of vertical image movement
     dx_img = px2[0] - px1[0]
     dy_img = px2[1] - px1[1]
     slope = dx_img / dy_img if abs(dy_img) > 1e-6 else 0.0
@@ -158,21 +186,23 @@ def get_line_slope(kf, offside_line_x, defender_y, H):
     return slope
 
 def _draw_offside_zone(img, line_pts, attacking_right, alpha=0.38):
-    """Darken the half of the image beyond the offside line (broadcast VAR look)."""
+    # darken the half of the image beyond the offside line to replicate the broadcast VAR look
     h, w = img.shape[:2]
     (x_top, y_top), (x_bot, y_bot) = line_pts
     if attacking_right:
         polygon = np.array([[x_top, y_top], [w, y_top], [w, y_bot], [x_bot, y_bot]], np.int32)
     else:
         polygon = np.array([[0, y_top], [x_top, y_top], [x_bot, y_bot], [0, y_bot]], np.int32)
+    # build a filled back polygon covering offside half, then blend with frame 
+    # alpha = 0.38 means the zone is darkened but still very visible
     overlay = img.copy()
     cv2.fillPoly(overlay, [polygon], (0, 0, 0), lineType=cv2.LINE_AA)
     cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
 
 
 def _draw_verdict_button(img, is_offside):
-    """Draw a modern rounded-pill verdict button at the bottom centre.
-    Red for OFFSIDE, green for ONSIDE."""
+    # draw a rounded-pill verdict button at the bottom centre of the frame
+    # red for OFFSIDE, green for ONSIDE
     h, w = img.shape[:2]
 
     if is_offside:
@@ -213,30 +243,36 @@ def _draw_verdict_button(img, is_offside):
 
     cv2.addWeighted(overlay, 0.95, img, 0.05, 0, img)
 
-
+# render current frame with player boxes, offside line, and verdict overlay drawn on it
+# returns a string for th ebrowser plus dimensions and raw numpy image for saving
 def render_frame():
     kf, players, H = get_frame_data()
     img = cv2.imread(os.path.join(KEYFRAMES_DIR, kf))
     team_colours = {0: (0, 0, 255), 1: (255, 0, 0), 2: (0, 255, 255)}
 
+    # draw each players bounding box 
     for i, p in enumerate(players):
         x1, y1, x2, y2 = p["box"]
         team = p["team"]
         colour = team_colours.get(team, (128, 128, 128))
         thickness = 1
 
+        # attacker in highlighted green
         if i == state["selected_attacker"]:
             colour = (0, 255, 0)
             thickness = 2
+        # defender in orange
         elif i == state["auto_defender"]:
             colour = (0, 165, 255)
             thickness = 2
 
+        # others by team colour unless OTH 
         cv2.rectangle(img, (x1, y1), (x2, y2), colour, thickness)
         label = "OTH" if team == 2 else f"T{team}"
         cv2.putText(img, f"{i}:{label}", (x1, y1 - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, colour, 1)
 
+    # if a verdict has been computed, overlay the offside line, zone darkening and result button
     if state["result"] is not None:
         res = state["result"]
         line_pts = res.get("line_image_pts")
@@ -262,7 +298,10 @@ def render_frame():
         _draw_verdict_button(img, res["offside"])
 
     _, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 88])
-    return base64.b64encode(buffer).decode('utf-8'), img.shape[1], img.shape[0]
+    return base64.b64encode(buffer).decode('utf-8'), img.shape[1], img.shape[0], img
+
+# computes offside verdict for current frame using selected attacker and auto selected defender
+# projects both players' relevant bounding box edges into world space and compares X positions
 def compute_offside():
     kf, players, H = get_frame_data()
     attacking_team = state["attacking_team"]
@@ -279,9 +318,11 @@ def compute_offside():
     img = cv2.imread(os.path.join(KEYFRAMES_DIR, kf))
     img_h, img_w = img.shape[:2]
 
+    # extract attacker bounding box
     att_box = players[attacker_idx]["box"]
     x1_att, y1_att, x2_att, y2_att = att_box
 
+    # extract defenedr bounding box
     def_box = players[defender_idx]["box"]
     x1_def, y1_def, x2_def, y2_def = def_box
     print(f"  Auto-selected defender: P{defender_idx} team={players[defender_idx]['team']} box={def_box}")
@@ -296,14 +337,17 @@ def compute_offside():
         defender_x, defender_y = project_point(H, x1_def, y2_def)
         anchor_px = x1_def
 
+    # offside line is set at defenders world - x position 
     offside_line_x = defender_x
 
+    # determine which direction counts as ahead in world space given this homography
     going_larger = attacking_larger_wx(H, attacking_right)
     if going_larger:
         is_offside = attacker_x > offside_line_x
     else:
         is_offside = attacker_x < offside_line_x
 
+    # margin is always positive (hence abs) this measures how far ahead or behing line attacker is
     margin = abs(attacker_x - offside_line_x)
 
     slope = get_line_slope(kf, offside_line_x, defender_y, H)
@@ -313,6 +357,7 @@ def compute_offside():
     dy_to_top = anchor_y
     dy_to_bottom = img_h - anchor_y
 
+    # extend line from defenders foot to top and bottom of image frame
     pt1_x = int(anchor_px - slope * dy_to_top)
     pt2_x = int(anchor_px + slope * dy_to_bottom)
 
@@ -336,6 +381,9 @@ def compute_offside():
         "attacking_right": True if attacking_right else False
     }
 
+# HTML/CSS/JS served to the browser. Palette and top-bar styles come from
+# static/ui.css (shared with the other two UIs). The JavaScript calls the
+# HTTP routes defined in class Handler below.
 HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -345,69 +393,10 @@ HTML = """
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/ui.css">
     <style>
-        :root {
-            --bg: #0a0b10;
-            --bg-elev: #12141c;
-            --surface: #171a24;
-            --surface-2: #1e2230;
-            --border: #262b3d;
-            --border-soft: #1e2230;
-            --text: #e6e8ee;
-            --text-dim: #9aa0b0;
-            --text-muted: #6b7085;
-            --accent: #3b82f6;
-            --accent-soft: rgba(59, 130, 246, 0.12);
-            --success: #10b981;
-            --success-soft: rgba(16, 185, 129, 0.12);
-            --danger: #ef4444;
-            --danger-soft: rgba(239, 68, 68, 0.12);
-            --warning: #f59e0b;
-            --warning-soft: rgba(245, 158, 11, 0.12);
-            --team-red: #ef4444;
-            --team-blue: #3b82f6;
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body {
-            height: 100%;
-            background: var(--bg);
-            color: var(--text);
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            font-size: 14px; line-height: 1.5;
-            -webkit-font-smoothing: antialiased;
-        }
-        .mono { font-family: 'JetBrains Mono', 'Roboto Mono', monospace; }
-        .appbar {
-            display: flex; align-items: center; gap: 20px;
-            padding: 14px 24px;
-            background: var(--bg-elev);
-            border-bottom: 1px solid var(--border);
-        }
-        .brand { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-        .brand-mark {
-            width: 32px; height: 32px; border-radius: 9px;
-            background: linear-gradient(135deg, #3b82f6, #10b981);
-            display: grid; place-items: center;
-            font-weight: 700; color: #fff; font-size: 14px;
-        }
-        .brand-text h1 { font-size: 14px; font-weight: 600; letter-spacing: -0.1px; }
-        .brand-text p { font-size: 11px; color: var(--text-muted); letter-spacing: 0.3px; }
-        .progress-bar { flex: 1; max-width: 480px; margin-left: 12px; }
-        .progress-meta { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 11px; }
-        .progress-meta .label { color: var(--text-dim); }
-        .progress-meta .count { color: var(--accent); font-weight: 600; }
-        .progress-track { height: 4px; background: var(--surface); border-radius: 2px; overflow: hidden; }
-        .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #3b82f6, #10b981); border-radius: 2px; transition: width 0.3s ease; }
-        .clip-chip {
-            margin-left: auto;
-            font-size: 10.5px; color: var(--text-muted);
-            padding: 5px 10px;
-            background: var(--surface);
-            border: 1px solid var(--border-soft);
-            border-radius: 6px;
-            max-width: 360px;
-            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        }
+        /* UI-specific styles for the offside checker. Palette, fonts and
+           top-bar live in /static/ui.css. */
         .layout {
             display: grid; grid-template-columns: 1fr 340px;
             gap: 20px; padding: 20px 24px;
@@ -756,6 +745,7 @@ HTML = """
         let canClick = false;
         let selectedAttacker = null;
 
+        // fetch the current keyframe from the server and draw it on the canvas
         function loadFrame() {
             fetch('/frame').then(r => r.json()).then(data => {
                 const img = new Image();
@@ -774,6 +764,7 @@ HTML = """
             });
         }
 
+        // update a workflow step indicator — stateCls is 'active', 'done', or empty string
         function setStepState(n, stateCls, hint) {
             const el = document.getElementById('step' + n);
             el.className = 'step' + (stateCls ? ' ' + stateCls : '');
@@ -785,6 +776,7 @@ HTML = """
             }
         }
 
+        // step 1: user selected the attacking team — enable direction buttons and notify server
         function setAttacking(team) {
             attackingTeam = team;
             document.getElementById('btn-t0').classList.toggle('active', team === 0);
@@ -800,6 +792,7 @@ HTML = """
             });
         }
 
+        // step 2: user selected attacking direction — server auto-selects the second-to-last defender
         function setDirection(isRight) {
             attackingRight = isRight;
             document.getElementById('btn-left').classList.toggle('active', !isRight);
@@ -826,6 +819,8 @@ HTML = """
             });
         }
 
+        // step 3: user clicks a player on the canvas — find which bounding box was hit
+        // and send the selected attacker index to the server
         canvas.addEventListener('click', function(e) {
             if (!canClick) return;
             const rect = canvas.getBoundingClientRect();
@@ -852,6 +847,7 @@ HTML = """
             });
         });
 
+        // step 4: trigger the offside computation, display the verdict, and auto-save the result
         function checkOffside() {
             fetch('/check_offside', {method: 'POST'}).then(r => r.json()).then(data => {
                 if (data.error) return;
@@ -862,6 +858,7 @@ HTML = """
             });
         }
 
+        // populate the verdict panel below the canvas with the result and margin meter
         function showVerdict(data) {
             const verdict = document.getElementById('verdict');
             verdict.style.display = 'grid';
@@ -880,6 +877,7 @@ HTML = """
             fill.className = 'margin-meter-fill' + (data.offside ? '' : ' onside');
         }
 
+        // clear all step selections and UI state without advancing to the next frame
         function resetUI() {
             attackingTeam = null;
             attackingRight = null;
@@ -905,11 +903,13 @@ HTML = """
             setStepState(4, '', 'Verdict appears below canvas');
         }
 
+        // reset the UI and re-fetch the frame so the user can start the workflow again
         function resetFrame() {
             resetUI();
             fetch('/reset', {method: 'POST'}).then(() => loadFrame());
         }
 
+        // replace the page with a completion screen once all frames have been checked
         function showDone() {
             document.body.innerHTML =
                 '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:Inter,sans-serif;background:#0a0b10;">' +
@@ -919,6 +919,7 @@ HTML = """
                 '</div></div>';
         }
 
+        // advance to the next frame — server records a skip if no verdict was saved
         function nextFrame() {
             fetch('/next', {method: 'POST'}).then(r => r.json()).then(data => {
                 if (data.done) showDone();
@@ -932,6 +933,7 @@ HTML = """
 </html>
 """
 
+# HTTP handler, GET serves UI, POST handles stp by stp workflow
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args): pass
     def log_error(self, format, *args): pass
@@ -944,9 +946,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(HTML.encode())
 
+        elif parsed.path == '/static/ui.css':
+            try:
+                with open('static/ui.css', 'rb') as f:
+                    css_bytes = f.read()
+                self.send_response(200)
+                self.send_header('Content-type', 'text/css; charset=utf-8')
+                self.send_header('Content-length', str(len(css_bytes)))
+                self.end_headers()
+                self.wfile.write(css_bytes)
+            except FileNotFoundError:
+                self.send_response(404)
+                self.end_headers()
+
         elif parsed.path == '/frame':
             kf = USABLE_FRAMES[state["index"]]
-            frame_b64, w, h = render_frame()
+            frame_b64, w, h, _ = render_frame()
             response = {
                 "frame": frame_b64, "width": w, "height": h,
                 "clip_name": kf,
@@ -969,6 +984,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(data).encode())
 
+        # user selected attacking team - reset all downstream state
         if parsed.path == '/set_attacking':
             data = json.loads(body)
             state["attacking_team"] = data["team"]
@@ -978,6 +994,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             state["result"] = None
             respond({"ok": True})
 
+        # user selected attacking direction - auto select defender
         elif parsed.path == '/set_direction':
             data = json.loads(body)
             state["attacking_right"] = bool(data["attacking_right"])
@@ -992,6 +1009,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 print(f"  Auto-defender: P{def_idx} team={p['team']} box={p['box']}")
             respond({"ok": True, "auto_defender": def_info})
 
+        # user clicked on player on canvas, find his respective bounding box
         elif parsed.path == '/select_attacker':
             data = json.loads(body)
             cx, cy = data["x"], data["y"]
@@ -1012,19 +1030,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 print(f"  Attacker click miss: clicked ({cx},{cy}) — no player found")
                 respond({"player_idx": None})
 
+        # run the offside computation and store result in state
         elif parsed.path == '/check_offside':
             result = compute_offside()
             state["result"] = result
             respond(result)
 
         elif parsed.path == '/save_result':
-            frame_b64, w, h = render_frame()
-            import base64 as b64
-            img_data = b64.b64decode(frame_b64)
-            img_array = np.frombuffer(img_data, np.uint8)
-            img_decoded = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+            _, w, h, img = render_frame()
             kf = USABLE_FRAMES[state["index"]]
-            cv2.imwrite(os.path.join(OUTPUT_DIR, kf), img_decoded)
+            cv2.imwrite(os.path.join(OUTPUT_DIR, kf), img)
             # Persist the verdict so this frame is skipped on restart.
             if state["result"] is not None:
                 all_verdicts[kf] = {
@@ -1036,6 +1051,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 save_verdicts()
             respond({"ok": True})
 
+        # clear all step selections for current frame without advancing
         elif parsed.path == '/reset':
             state["attacking_team"] = None
             state["attacking_right"] = None
@@ -1045,6 +1061,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             respond({"ok": True})
 
         elif parsed.path == '/next':
+            current_kf = USABLE_FRAMES[state["index"]]
+            if current_kf not in all_verdicts:
+                # User advanced without saving a verdict for this frame.
+                # Mark it skipped so it doesn't re-queue next session.
+                skipped_verdicts.add(current_kf)
+                save_skipped_verdicts()
+                print(f"  Skipped (no verdict): {current_kf}")
             state["index"] += 1
             state["attacking_team"] = None
             state["attacking_right"] = None

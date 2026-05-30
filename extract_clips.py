@@ -1,3 +1,6 @@
+# This file cuts a short clip around each offside event from the downloaded SoccerNet match videos
+# using ffmpeg. Clips are saved to data/clips/ as mp4 files. Runs with --game <path> to process a single game
+# or without arguments to process every downloaded game
 import os
 import json
 import subprocess
@@ -5,8 +8,8 @@ import argparse
 
 SOCCERNET_DIR = "data/soccernet"
 OUTPUT_DIR = "data/clips"
-CLIP_BEFORE = 10
-CLIP_AFTER = 25
+CLIP_BEFORE = 10   # 10 seconds before offside timestamp
+CLIP_AFTER = 25    # 25 seconds after offside timestamp (so total of 35 second clip duration)
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -53,7 +56,7 @@ for game in GAMES:
     print(f"\n{game}")
     print(f"Found {len(offsides)} offside events")
 
-    #extract time stamp fron each offsid event
+    #extract timestamp fron each offsid event
     for i, event in enumerate(offsides):
         half = int(event["gameTime"].split(" - ")[0])
         position_ms = int(event["position"])

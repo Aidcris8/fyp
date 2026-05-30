@@ -34,18 +34,25 @@ The whole pipeline is orchestrated by the [Makefile](Makefile). Stages are
 idempotent — re-running any stage only processes new or stale items.
 
 ```bash
-# 1. (manual, one-off) populate data/soccernet/ with match videos:
+# 0. (optional) scan the dataset to identify high-offside games:
+python scan_offsides.py
+
+# 1. (manual, one-off) download chosen match videos:
 python download_videos.py
 
 # 2. build everything that is currently stale:
+#    this runs clip extraction, team identification, and homography computation.
+#    three stages launch browser UIs — open the URL printed in the terminal
+#    and complete the annotation before pressing Ctrl+C to continue.
 make
 
 # 3. open the offside-verdict UI once the build chain is done:
 make offside
 ```
 
-Three of the seven stages are browser-based human-in-the-loop UIs served on
-localhost. After `make` launches them, open the URL printed in the terminal:
+Three of the nine stages are browser-based human-in-the-loop UIs served on
+localhost. After `make` launches them, open the URL printed in the terminal
+and complete the annotation step before the pipeline can continue:
 
 | Stage | Script | Port |
 |------:|--------|------|
@@ -63,8 +70,8 @@ running), `make clean-derived`, and `make clean-all`.
 ```
 .                         pipeline scripts (one per stage)
 eval/                     evaluation scripts that back the Chapter 5 numbers
+static/                   shared CSS served to all three browser UIs
 data/                     all generated artefacts; gitignored
-docs/                     extended commentary on the trickier modules
 report/dissertation/      LaTeX source for the dissertation
 Makefile                  pipeline orchestration
 requirements.txt          pinned Python dependencies
