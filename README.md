@@ -9,6 +9,25 @@ This README only covers what you need to **run** the code.
 
 ---
 
+## Dataset access
+
+This project uses the [SoccerNet](https://www.soccer-net.org/) dataset for
+match footage and event annotations. To reproduce the pipeline from scratch
+you must first request access:
+
+1. Register at <https://www.soccer-net.org/data> and agree to the dataset
+   licence.
+2. Once approved you will receive the download password. Replace the
+   `PASSWORD` constant in `download_videos.py` with your own credential.
+3. Use `scan_offsides.py` to identify games with high offside counts, then
+   add the desired game paths to the `games` list in `download_videos.py`.
+
+The SoccerNet password used in this project (`s0cc3rn3t`) is the publicly
+documented community password referenced in the original dataset paper and
+is not a private credential.
+
+---
+
 ## Requirements
 
 - Python 3.11
@@ -16,6 +35,8 @@ This README only covers what you need to **run** the code.
 - GNU `make` (drives the pipeline)
 - An NVIDIA GPU is recommended for `team_identification.py`
   (YOLO11x-seg) but not required.
+- All scripts must be run from the project root directory, not from within
+  a subdirectory.
 
 Install Python dependencies:
 

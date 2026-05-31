@@ -23,4 +23,4 @@ torch==2.5.1
 torchvision==0.20.1
 
 # --- dataset access ---------------------------------------------------------
-SoccerNet==0.1.62             # download_videos.py / download_soccernet.py
+SoccerNet==0.1.62             # download_videos.py

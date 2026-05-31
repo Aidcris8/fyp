@@ -6,7 +6,7 @@
 
 Football is the most widely watched sport globally, and the consistent application of its laws is essential to the integrity of any match. Among these laws, the offside rule (Law~11)~\cite{ifab2023laws} is one of the most commonly occurring and the most difficult to adjudicate in real time, because it requires the simultaneous judgement of multiple player positions at the exact moment that the ball is played.
 
-In elite level football, this difficulty has been addressed through the introduction of a semi-automated offside system which consists of dedicated multi-camera infrastructure and proprietary tracking software. However, this technology is limited to the top tier of the sport given its capital cost and operational complexity. As a result, any league or game that takes place outside these elite level competitions does not have access to this infrastructure, and offside decisions in those contexts are based solely on the linesman's judgement.
+In elite level football, this difficulty has been addressed through the introduction of a semi-automated offside system which consists of special multi-camera equipment along with complex tracking software. However, given the high cost and complexities involved, this technology is limited to the very top tier of the sport and as a result, any league or game that takes place outside these elite level competitions does not have access to this facility, and offside decisions in those contexts rest solely in the hand of the linesman.
 
 This final year project is motivated by the gap between the precision available to elite football through \gls{var} and the visual information that is already available, in the form of broadcast video, to the rest of the game. If a system can be built that produces credible offside verdicts purely from broadcast footage alone, then a comparable standard of objective analysis can be approximated for purposes such as performance analytics and coaching feedback in settings where \gls{var} is not deployed.
 
@@ -36,20 +36,20 @@ Full game broadcasts are obtained from the SoccerNet dataset and from each game 
 
 A homography between the broadcast image plane and a real-world pitch coordinate system is then estimated. This is done by identifying a number of relevant pitch landmarks --- such as penalty box corners, halfway line intersections, and corner flags --- pairing each with its actual coordinate on the regulation pitch, and computing the perspective transformation that best maps between the two using \gls{ransac}. Once the homography is known, every player position can be reprojected onto the pitch in metric coordinates.
 
-Finally, the offside condition is evaluated geometrically. The attacking team, the direction of attack, the attacker who receives the ball, and the second-to-last defender of the opposing team are identified, and the reprojected positions of the two players, projected onto the direction of attack, determine whether the attacker was onside or offside at the moment of the pass, together with the offset in metres.
+Finally, the offside condition is evaluated geometrically. The attacking team, the direction of attack, the attacker receiving the ball, and the second-to-last defender of the defending team are selected. Then the reprojected locations of the two players are projected onto the direction of attack which determine whether the attacker was onside or offside at the moment of the pass, together with the margin in metres.
 
 \section{Assumptions and Scope}%
 \label{sec:intro_scope}
 
-The scope of the system has been deliberately constrained to the broadcast single-camera setting, and several practical assumptions follow from that choice.
+The scope of the system has been specifically confined to the broadcast single-camera setting, and as a result a few practical assumptions follow from that choice.
 
-The first assumption is that the input footage uses a standard wide-angle main broadcast view, which is typically employed for live coverage. The system cannot operate on close-up shots since it requires a minimum number of visible pitch landmarks; a standard wide-angle view provides sufficient coverage to carry out the full pipeline.
+The first assumption is that the input footage uses a standard wide-angle main broadcast view, which is typically used for live coverage. The system will not work with shots taken too close since it requires a certain minimum number of pitch landmarks to be visible in the shot.
 
-The second assumption is that the keyframe corresponding to the moment of the pass is selected manually rather than detected automatically. Identifying the precise frame at which the ball leaves the passing player's foot is crucial, since even one frame of error can change the attacker's classification from offside to onside given the speed of play. Removing this manual step is identified as future work rather than a contribution of the present work.
+The second assumption is that the keyframe corresponding to the moment of the pass is selected manually rather than detected automatically. Identifying the precise frame at which the ball leaves the passing player's foot is crucial, since even one frame before or after can change the attacker's classification from offside to onside given the speed of play. Automatic keyframe detection is identified as future work rather than a contribution of the present work.
 
 The third assumption is that the pitch landmarks used to estimate the homography are picked manually for each event. As with keyframe selection, automating the detection of these landmarks is left to future work.
 
 \section{Report Structure}%
 \label{sec:intro_structure}
 
-The remainder of this report is organised as follows. Chapter~\ref{chp:background} covers the offside law, object detection, projective geometry, and a review of related work. Chapter~\ref{chp:design} details the pipeline design and motivates component choices. Chapter~\ref{chp:implementation} documents each stage and the supporting annotation interfaces. Chapter~\ref{chp:evaluation} evaluates accuracy against ground-truth annotations and analyses failure modes. Chapters~\ref{chp:future_work} and~\ref{chp:conclusions} outline future directions and conclusions.
+The remainder of this report is organised as follows. Chapter~\ref{chp:background} covers the offside law, object detection, projective geometry, and a review of related work. Chapter~\ref{chp:design} details the pipeline design and reasoning behind component choices. Chapter~\ref{chp:implementation} documents each stage and the supporting annotation interfaces. Chapter~\ref{chp:evaluation} evaluates accuracy against ground-truth annotations and analyses failure modes. Chapters~\ref{chp:future_work} and~\ref{chp:conclusions} outline future directions and conclusions.

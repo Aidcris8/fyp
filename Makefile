@@ -112,14 +112,14 @@ dry:
 .PHONY: clean-derived
 clean-derived:
 	rm -rf data/team_identification data/homography_validation data/offside_results
-	rm -f $(DETECTIONS) $(MATRICES) data/offside_verdicts.json
+	rm -f $(DETECTIONS) $(MATRICES) data/offside_verdicts.json data/offside_skipped.json
 	@echo "Cleaned derived outputs. Next 'make' will rebuild team-id and homography only."
 
 # ---- nuclear: also wipes clips, keyframes, manual annotations -------------
 .PHONY: clean-all
 clean-all: clean-derived
 	rm -rf data/clips data/keyframes
-	rm -f $(KEYFRAMES_JSON) $(POINTS) $(CLIPS_STAMP)
+	rm -f $(KEYFRAMES_JSON) $(POINTS) $(CLIPS_STAMP) data/homography_skipped.json
 	@echo "Cleaned ALL pipeline artefacts. You will need to re-annotate everything."
 
 # ---- help -------------------------------------------------------------------

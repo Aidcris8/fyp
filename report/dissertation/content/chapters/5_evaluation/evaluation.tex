@@ -4,13 +4,13 @@
 \section{Evaluation Methodology}%
 \label{sec:eval_methodology}
 
-The evaluation assesses the pipeline against each of the objectives stated in Section~\ref{sec:intro_aims}. Four aspects are measured: the quality of the homography calibration, player detection coverage, end-to-end verdict accuracy, and the distribution of the offside margins produced.
+The evaluation assesses the pipeline against each objective stated in Section~\ref{sec:intro_aims}. Four metrics are evaluated:  homography calibration quality, player detection coverage, end-to-end verdict accuracy, and the distribution of the offside margins produced.
 
 \subsection{Ground Truth and Its Limitations}
 
-The ground truth used for verdict evaluation is the offside annotation provided by the SoccerNet dataset~\cite{giancola2018soccernet,deliegev2soccernet}. Each clip in the dataset corresponds to an event at which the match linesman raised the offside flag; accordingly, the expected correct verdict for every event is \emph{offside}. This follows the approach taken by~\cite{panse2020dataset}, where the system was evaluated against manually verified annotations of broadcast images.
+For evaluation purposes, the ground truth used for the system's verdicts is the offside annotation provided by the SoccerNet dataset~\cite{giancola2018soccernet,deliegev2soccernet}. Each clip in the dataset corresponds to an event at which the match linesman raised the offside flag; accordingly, the expected correct verdict for every event is \emph{offside}. This is in line with the methodology used in~\cite{panse2020dataset}, where the system was evaluated against manually verified annotations of broadcast images.
 
-An important limitation of this ground truth is that SoccerNet annotations reflect match official judgement rather than an independent geometric measurement. Linesman errors are well-documented in marginal calls where the margin is within centimetres. Any discrepancy between system and annotation may therefore stem from system error or official error, and the two cannot be distinguished without independent measurement. Results are stratified by reported margin to address this: large-margin cases are unlikely to involve official error and provide a cleaner signal, while small-margin cases represent uncertainty for both the system and the linesman.
+One important limitation of this ground truth is that SoccerNet annotations reflect match official judgement rather than an independent geometric measurement. Linesmen are human and therefore although professionals they are prone to human error and linesmen mistakes have been found to be very common when there is a margin of centimetres. Any discrepancy between system and annotation may therefore stem from system error or official error; the two cannot be distinguished without independent measurement. Results are stratified by reported margin to address this: large-margin cases are unlikely to involve official error and provide a cleaner signal, while small-margin cases represent uncertainty for both the linesman and the system.
 
 \subsection{Dataset}
 
@@ -38,14 +38,14 @@ A total of 457 offside clips were extracted from match footage covering differen
 \section{Homography Reprojection Error}%
 \label{sec:eval_homography}
 
-The quality of each estimated homography is measured by the symmetric pixel reprojection error: the known world coordinates of each landmark correspondence are projected back into the image via $\mathbf{H}^{-1}$, and the Euclidean distance to the original clicked position is computed. A lower value indicates a more accurate calibration.
+The quality of each estimated homography is measured by the symmetric pixel reprojection error (Equation~\ref{eq:reproj}): the known world coordinates of each landmark correspondence are projected back into the image via $\mathbf{H}^{-1}$, and the Euclidean distance to the original clicked position is computed. A lower value indicates a more accurate calibration.
 
 Across the 150 retained calibrated frames, the mean reprojection error was \textbf{1.00\,px} and the median was \textbf{0.92\,px}. 85.3\% of these frames were within the threshold of 2\,px and 14.7\% were above. To translate this pixel error into a world-space uncertainty, the local image-to-pitch scale of $\mathbf{H}^{-1}$ is evaluated at a representative point near the far touchline: one metre along the pitch surface projects to approximately 4--7 pixels of image displacement at this depth, so inverting the relationship maps one pixel of image error to approximately 0.14--0.25\,m of world-space displacement. The exact figure varies with depth because perspective compresses distant regions of the pitch more strongly than near regions. This figure sets a practical lower bound on the geometric precision of any offside measurement produced by the system: verdicts with margins below roughly 0.3\,m cannot be considered reliably resolved given the calibration precision.
 
 \section{Player Detection}%
 \label{sec:eval_detection}
 
-YOLO11x-seg was applied to all 164 annotated keyframes. Across these frames, the mean number of players detected was \textbf{18.8} (minimum 8, maximum 36). No frame produced zero detections. The detection step runs prior to the homography quality filter, so detection statistics are reported across all 164 keyframes rather than the 150-event clean set. Visual inspection confirmed that the attacker and second-to-last defender were correctly detected in most frames. The main failure modes were peripheral detections (spectators, advertising staff) and occasional splitting of occluded players into overlapping boxes; neither affected final verdicts, as the operator interface allowed the correct attacker to be selected.
+YOLO11x-seg was applied to all 164 annotated keyframes. Across these frames, the mean number of players detected was \textbf{18.8} (minimum 8, maximum 36). There was not a frame which produced zero detections. Since detection occurs before the homography quality filter, statistics are reported across all 164 keyframes rather than the subset of 150 events. Visual inspection confirmed that the attacker and second-to-last defender were correctly detected and selected in most frames. The main failure modes were peripheral detections (detections of advertising staff, stewards, cameramen, etc.) and occasional splitting of occluded players into overlapping boxes. However, since only the operator-selected attacker is evaluated, neither failure mode affected the final verdicts.
 
 \section{End-to-End Offside Verdicts}%
 \label{sec:eval_offside}
@@ -76,7 +76,7 @@ The overall figure conflates cases of very different difficulty. Table~\ref{tab:
   \end{tabular}
 \end{table}
 
-The stratified results reveal a pattern consistent with the calibration precision characterised in Section~\ref{sec:eval_homography}. For events where the system measured a margin exceeding 1.0\,m, agreement with the SoccerNet annotation was 97.4\%; the single disagreement in this band is attributable to a documented linesman error rather than a system failure. For the moderate band (0.5--1.0\,m), agreement remained high at 86.8\%. For marginal events where the measured separation was at most 0.5\,m, agreement fell to 75.9\%, which is above the random-chance level of 50\% but reflects genuine geometric uncertainty: a reprojection error of approximately 1\,px translates to a world-space uncertainty of 15--25\,cm, meaning that for sub-0.5\,m events neither the system's measurement nor the match official's decision can be considered authoritative. An example of the pipeline output for a clear offside event is shown in Figure~\ref{fig:result_verdict}.
+The above results reveal a pattern consistent with that of the calibration precision characterised in Section~\ref{sec:eval_homography}. For cases where the system measured a margin exceeding 1.0\,m, agreement with the SoccerNet annotation was 97.4\%; the single disagreement in this band is attributable to a documented linesman error rather than a system failure. For the moderate band (0.5--1.0\,m), agreement remained high at 86.8\%. For marginal events where the measured separation was at most 0.5\,m, agreement fell to 75.9\%, which is above the random-chance level of 50\% but reflects genuine geometric uncertainty: a reprojection error of approximately 1\,px translates to a world-space uncertainty of 15--25\,cm, meaning that for cases where margin is sub-0.5\,m, neither the measurement performed by the system nor the decision made by the linesmen could be considered authoritative. An example of the pipeline output for a clear offside event is shown in Figure~\ref{fig:result_verdict}.
 
 \begin{figure}[h]
   \centering
@@ -98,7 +98,7 @@ Three categories of failure were identified.
 
 \textbf{Team misidentification.} Three of the 22 onside verdicts in the clean set were attributable to team misidentification rather than geometric error: the attacker was assigned to the defending team's cluster, causing the system to evaluate the wrong player. This failure is most common when the two teams wear kits whose Lab colour vectors are close together, or when the visible torso area is small due to distance from the camera.
 
-\textbf{Marginal measurement uncertainty.} The remaining 19 onside verdicts in the clean set occurred in the marginal or moderate bands (margin $\leq$ 1.0\,m). As discussed above, the one clear-band disagreement (margin 1.10\,m) is attributable to a documented linesman error rather than a system failure. The remaining cases fall within or close to the system's estimated measurement precision and cannot be conclusively attributed to system error.
+\textbf{Marginal measurement uncertainty.} The remaining 19 onside verdicts span the full margin range. Of these, one (margin 1.10\,m, in the clear band) is attributable to a documented linesman error rather than a system failure; the other 18 occurred in the marginal or moderate bands and fall within or close to the system's estimated measurement precision, and cannot be conclusively attributed to system error.
 
 \section{Comparison with Published Work}%
 \label{sec:eval_comparison}

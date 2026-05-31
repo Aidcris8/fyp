@@ -10,9 +10,8 @@ The complete source code is provided on the accompanying digital media. This app
 File / Directory & Purpose \\
 \hline
 \texttt{Makefile} & Automates the non-interactive pipeline stages. \\
-\texttt{download\_soccernet.py} & Downloads SoccerNet event annotation files. \\
-\texttt{download\_videos.py} & Downloads 720p match video files from SoccerNet. \\
-\texttt{scan\_offsides.py} & Displays a summary of available offside events and download status. \\
+\texttt{scan\_offsides.py} & Ranks available SoccerNet games by offside event count to assist game selection. \\
+\texttt{download\_videos.py} & Downloads 720p match video files from SoccerNet for the configured game list. \\
 \texttt{extract\_clips.py} & Extracts 35-second MP4 clips around each annotated offside event. \\
 \texttt{annotate\_keyframes.py} & Browser interface (port 5000) for selecting the pass frame in each clip. \\
 \texttt{export\_keyframes.py} & Exports the annotated frame from each clip as a JPEG image. \\
@@ -20,6 +19,8 @@ File / Directory & Purpose \\
 \texttt{pick\_points.py} & Browser interface (port 5001) for entering pitch landmark correspondences. \\
 \texttt{compute\_homography.py} & Estimates homography matrices from landmark correspondences. \\
 \texttt{offside\_checker.py} & Browser interface (port 5002) for reviewing and recording offside verdicts. \\
+\texttt{eval/} & Evaluation scripts used to justify the Chapter~5 parameter choices (two-pass detection, NMS threshold, chroma weight). \\
+\texttt{static/ui.css} & Shared stylesheet served to all three browser interfaces. \\
 \hline
 \end{tabularx}
 
@@ -42,6 +43,8 @@ Path & Contents \\
 \texttt{data/homography\_validation/} & Validation overlay images with projected pitch line model. \\
 \texttt{data/offside\_verdicts.json} & Recorded verdicts, margins, and metadata per event. \\
 \texttt{data/offside\_results/} & Annotated keyframe images with offside line and verdict overlay. \\
+\texttt{data/detection\_comparison/} & Side-by-side visualisations from the two-pass detection evaluation script. \\
+\texttt{data/team\_identification\_debug.json} & Per-player Lab feature dump written by \texttt{team\_identification.py} in debug mode; read by \texttt{eval/test\_chroma\_weight.py}. \\
 \hline
 \end{tabularx}
 
@@ -68,11 +71,12 @@ The pipeline was developed and tested under the following environment:
 Component & Version \\
 \hline
 Python & 3.11 \\
-ultralytics (YOLO11x-seg) & 8.3.x \\
-OpenCV (\texttt{opencv-python}) & 4.9.x \\
-scikit-learn & 1.4.x \\
-NumPy & 1.26.x \\
-FFmpeg & 6.x \\
+ultralytics & 8.4.19 \\
+OpenCV (\texttt{opencv-python}) & 4.13.0 \\
+scikit-learn & 1.8.0 \\
+NumPy & 2.3.5 \\
+PyTorch & 2.5.1 \\
+FFmpeg & 7.x \\
 Operating system & Ubuntu 22.04 (WSL2 on Windows 11) \\
 \hline
 \end{tabularx}

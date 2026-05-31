@@ -8,24 +8,44 @@ This appendix describes how to run the offside detection pipeline end-to-end. Al
 The following software must be installed before running the pipeline:
 
 \begin{itemize}
-  \item Python~3.10 or later
-  \item \texttt{pip} packages: \texttt{ultralytics}, \texttt{opencv-python}, \texttt{scikit-learn}, \texttt{numpy}, \texttt{SoccerNet}, \texttt{ffmpeg-python}
+  \item Python~3.11
   \item FFmpeg (available on the system \texttt{PATH})
+  \item GNU Make
 \end{itemize}
 
-Install Python dependencies with:
+Install all Python dependencies with:
 \begin{verbatim}
-pip install ultralytics opencv-python scikit-learn numpy SoccerNet
+pip install -r requirements.txt
 \end{verbatim}
 
-\section*{Step 1 — Download SoccerNet Metadata and Videos}
+The first run of \texttt{team\_identification.py} will automatically download the
+YOLO11x-seg weights (\textasciitilde125\,MB) via Ultralytics. No manual download is required.
+
+\section*{Dataset Access}
+
+This pipeline uses the SoccerNet dataset~\cite{giancola2018soccernet,deliegev2soccernet}, which requires
+prior registration. To obtain access:
+
+\begin{enumerate}
+  \item Register at \url{https://www.soccer-net.org/data} and agree to the dataset licence.
+  \item Once approved, the download password will be provided. This should be set as the
+        \texttt{PASSWORD} constant in \texttt{download\_videos.py}.
+\end{enumerate}
+
+The password \texttt{s0cc3rn3t} used in this project is the publicly documented community
+credential referenced in the SoccerNet paper and is not a private credential.
+
+\section*{Step 1 — Select and Download Match Videos}
 
 These steps are performed once per dataset change and are not part of the automated build chain.
 
 \begin{enumerate}
-  \item Run \texttt{python download\_soccernet.py} to download the event annotation JSON files (\texttt{Labels-v2.json}) for all configured leagues and seasons into \texttt{data/soccernet/}.
-  \item Run \texttt{python scan\_offsides.py} to display a summary table of available offside events per game, together with download status. Use this to decide which games to download.
-  \item Run \texttt{python download\_videos.py} to download the 720p match video files for the configured game list into \texttt{data/soccernet/}.
+  \item Run \texttt{python scan\_offsides.py} to display a ranked table of available games
+        by offside event count, together with download status. Adjust the \texttt{LEAGUE\_FILTER}
+        constant at the top of the script to restrict the scan to a specific league.
+  \item Add the desired game paths to the \texttt{games} list in \texttt{download\_videos.py}.
+  \item Run \texttt{python download\_videos.py} to download the 720p match video files into
+        \texttt{data/soccernet/}.
 \end{enumerate}
 
 \section*{Step 2 — Extract Clips}
