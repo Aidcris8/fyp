@@ -1,7 +1,11 @@
-# Football Offside Detection — FYP
+# Football Offside Detection — Computer Vision Pipeline
 
 Source code for Aidan Cristina's B.Sc.(Hons.) Computing Science Final Year
 Project (University of Malta, supervisor: Prof. Carl James Debono).
+
+![Example offside verdict](docs/example_verdict.jpg)
+
+*Example pipeline output: bounding boxes are colour-coded by team, the yellow line is the offside line projected back into the image, and the verdict is displayed at the foot of the frame.*
 
 The full write-up — motivation, related work, design rationale, evaluation,
 and discussion — lives in [`report/dissertation/main.pdf`](report/dissertation/main.pdf).
